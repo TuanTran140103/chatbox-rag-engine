@@ -13,3 +13,9 @@ https/datas
 ./Services/MarkdownService.cs
 
 appsettings.Dev*
+
+data/cache
+
+uploads/
+
+data/tests
