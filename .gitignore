@@ -1,0 +1,15 @@
+obj
+Logs/
+bin/
+Migrations
+
+.env
+credentials
+
+https/datas
+
+.vscode
+
+./Services/MarkdownService.cs
+
+appsettings.Dev*

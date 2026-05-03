@@ -1,0 +1,24 @@
+@MarkdownGenQAs_HostAddress = https://localhost:7128
+@id = 3fa85f64-5717-4562-b3fc-2c963f66afa6
+@ocrFileId = c0a437d5-a1d2-4b57-9815-ac85a286d9af
+@externalFileJobId = some-external-id
+
+### 1. Get All OCR File Jobs
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/ocr-jobs
+Accept: application/json
+
+### 2. Get OCR File Job by ID
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/ocr-jobs/{{id}}
+Accept: application/json
+
+### 3. Get OCR File Job by OCR File ID
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/ocr-jobs/by-file/{{ocrFileId}}
+Accept: application/json
+
+### 4. Get OCR File Job by External File Job ID
+# file_id from OCR server response
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/ocr-jobs/by-external-file/{{externalFileJobId}}
+Accept: application/json
+
+### 5. Delete OCR File Job
+DELETE {{MarkdownGenQAs_HostAddress}}/api/v1/ocr-jobs/{{id}}

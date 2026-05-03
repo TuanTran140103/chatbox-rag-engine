@@ -1,0 +1,128 @@
+@MarkdownGenQAs_HostAddress = https://localhost:7128
+@id = 5e404ebe-9c9f-440d-9e1a-bf613609e33b
+@categoryId = d48d8b16-f4ee-4f63-bf47-7d628306d02c
+@taskId = tuantran-2281988f-ac43-49a9-ba64-25e6a4a028e0
+
+### 1. Upload PDF
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/files/upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="File"; filename="test_75.pdf"
+Content-Type: application/pdf
+
+< ./data/tests/test_75.pdf
+--boundary--
+
+### 2. Get all files
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/files
+Accept: application/json
+
+### 3. Get file by ID
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/files/{{id}}
+Accept: application/json
+
+### 4. Update file metadata
+PUT {{MarkdownGenQAs_HostAddress}}/api/v1/files/{{id}}
+Content-Type: application/json
+
+{
+  "author": "Updated Author",
+  "categoryId": "{{categoryId}}"
+}
+
+### 5. Delete File (Cleanup DB and S3)
+DELETE {{MarkdownGenQAs_HostAddress}}/api/v1/files/{{id}}
+
+
+# ==============================================================================
+# OCR OPERATIONS (API v1.2 Flow)
+# ==============================================================================
+
+### 6. Start OCR Process (default model: chandraocr)
+# Uses our internal Document ID. This triggers the external OCR service.
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/files/ocr/process/{{id}}
+
+### 7. Start OCR Process with custom modelId
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/files/ocr/process/{{id}}?modelId=deepseekocr
+
+### 8. [NOT IMPLEMENTED] OCR Notification (SSE)
+# Deprecated in v1.2, replaced by Redis Stream polling/events.
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/files/ocr/notification/{{id}}
+Accept: text/event-stream
+
+### 9. [NOT IMPLEMENTED] Get OCR Job Status (Polling)
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/files/ocr/status/{{id}}
+
+### 10. [NOT IMPLEMENTED] Cancel OCR Job
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/files/ocr/cancel/{{id}}
+
+
+# ==============================================================================
+# GEN-QA OPERATIONS
+# ==============================================================================
+
+### 11. Start GenQA Process
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/files/gen-qa/process/{{id}}
+
+### 12. [NOT IMPLEMENTED] GenQA Notification (SSE)
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/files/gen-qa/notification/{{id}}
+Accept: text/event-stream
+
+### 13. [NOT IMPLEMENTED] Cancel GenQA
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/files/gen-qa/cancel/{{id}}
+
+
+# ==============================================================================
+# DOWNLOAD OPERATIONS
+# ==============================================================================
+
+### 14. Download OCR Markdown
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/files/{{id}}/download?scope=markdown
+
+### 15. Download PDF (Original)
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/files/{{id}}/download?scope=original
+
+### 16. Download QAs (Markdown format)
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/files/{{id}}/download?scope=qa-markdown
+
+### 17. Download QAs (JSON format)
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/files/{{id}}/download?scope=qa-json
+
+
+# ==============================================================================
+# JOBS & LOGS
+# ==============================================================================
+
+### 18. Get all OCR Jobs
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/ocr-jobs
+
+### 19. Get OCR Job by File ID
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/ocr-jobs/by-file/{{id}}
+
+### 20. Get OCR Job by External Task ID
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/ocr-jobs/by-external-file/{{taskId}}
+
+### 21. Get Logs for File
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/logs/file/{{id}}
+
+
+# ==============================================================================
+# EXTERNAL OCR SERVER TESTING (Direct Connection)
+# ==============================================================================
+
+### 22. [DEBUG] Test OCR Server Directly
+# Base URL: http://localhost:8888/api/v1
+POST http://localhost:8888/api/v1/ocr/process
+Content-Disposition: attachment; filename="test.pdf"
+Content-Type: application/pdf
+
+< ./datas/test.pdf
+
+### 23. [DEBUG] Check Job Status on OCR Server
+GET http://localhost:8888/api/v1/ocr/status/{{taskId}}
+
+### 24. [DEBUG] Download Result from OCR Server
+GET http://localhost:8888/api/v1/ocr/result/{{taskId}}
+
+

@@ -1,0 +1,6 @@
+@MarkdownGenQAs_HostAddress = https://localhost:7128
+@fileId = e4a691b8-1e70-43a9-96e5-88a1c960a3f9
+
+### Get logs for a specific file
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/logs/file/{{fileId}}
+Accept: application/json

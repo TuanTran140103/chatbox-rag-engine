@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCR SSE Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        #status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+        #status.connecting {
+            background: #fff3cd;
+            color: #856404;
+        }
+        #status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        #status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        #status.closed {
+            background: #cce5ff;
+            color: #004085;
+        }
+        #messages {
+            margin-top: 20px;
+            max-height: 500px;
+            overflow-y: auto;
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+        }
+        .message {
+            margin-bottom: 12px;
+            padding: 10px;
+            background: white;
+            border-left: 4px solid #007bff;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .message-time {
+            color: #999;
+            font-size: 11px;
+            margin-bottom: 5px;
+        }
+        .message-content {
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔔 OCR Notification Stream Test</h1>
+        
+        <div class="input-group">
+            <label for="fileId">OCR File ID:</label>
+            <input type="text" id="fileId" placeholder="e4a691b8-1e70-43a9-96e5-88a1c960a3f9" 
+                   value="e4a691b8-1e70-43a9-96e5-88a1c960a3f9">
+        </div>
+
+        <div class="input-group">
+            <label>
+                <input type="checkbox" id="streamContent"> Stream Content (show OCR markdown per page)
+            </label>
+        </div>
+
+        <button id="connectBtn" onclick="connect()">Connect to Stream</button>
+        <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+
+        <div id="status" class="connecting" style="display:none;">Initializing...</div>
+        
+        <div id="messages"></div>
+    </div>
+
+    <script>
+        let eventSource = null;
+        const messagesDiv = document.getElementById('messages');
+        const statusDiv = document.getElementById('status');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+
+        function updateStatus(message, className) {
+            statusDiv.textContent = message;
+            statusDiv.className = className;
+            statusDiv.style.display = 'block';
+        }
+
+        function addMessage(data, type = 'normal') {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            
+            const timeDiv = document.createElement('div');
+            timeDiv.className = 'message-time';
+            timeDiv.textContent = new Date().toLocaleTimeString();
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            
+            if (type === 'raw') {
+                contentDiv.textContent = data;
+            } else {
+                try {
+                    const json = JSON.parse(data);
+                    contentDiv.textContent = JSON.stringify(json, null, 2);
+                } catch {
+                    contentDiv.textContent = data;
+                }
+            }
+            
+            messageDiv.appendChild(timeDiv);
+            messageDiv.appendChild(contentDiv);
+            messagesDiv.insertBefore(messageDiv, messagesDiv.firstChild);
+        }
+
+        function connect() {
+            if (eventSource) {
+                disconnect();
+            }
+
+            messagesDiv.innerHTML = '';
+            const fileId = document.getElementById('fileId').value.trim();
+            const streamContent = document.getElementById('streamContent').checked;
+            
+            if (!fileId) {
+                alert('Please enter a File ID');
+                return;
+            }
+
+            const url = `https://localhost:7128/api/v1/files/ocr/notification/${fileId}?streamContentOcr=${streamContent}`;
+            
+            updateStatus('Connecting to notification stream...', 'connecting');
+            connectBtn.disabled = true;
+            disconnectBtn.disabled = false;
+
+            // Sử dụng fetch để kiểm tra response trước
+            fetch(url, {
+                headers: {
+                    'Accept': 'text/event-stream'
+                }
+            }).then(response => {
+                const contentType = response.headers.get('content-type');
+                
+                // Nếu là JSON (job đã kết thúc hoặc lỗi), hiện kết quả và dừng
+                if (contentType && contentType.includes('application/json')) {
+                    response.json().then(data => {
+                        updateStatus('Job already finished or error occurred', 'closed');
+                        addMessage(JSON.stringify(data, null, 2), 'raw');
+                        connectBtn.disabled = false;
+                        disconnectBtn.disabled = true;
+                    });
+                    return;
+                }
+
+                // Nếu là SSE stream, sử dụng EventSource
+                if (contentType && contentType.includes('text/event-stream')) {
+                    eventSource = new EventSource(url);
+                    
+                    eventSource.onopen = () => {
+                        updateStatus('✅ Connected - Listening for events...', 'connected');
+                        addMessage('Connection established', 'raw');
+                    };
+
+                    eventSource.onmessage = (event) => {
+                        addMessage(event.data);
+                        
+                        // Kiểm tra nếu nhận được "Done" hoặc status kết thúc
+                        if (event.data === 'Done') {
+                            updateStatus('Stream completed', 'closed');
+                            disconnect();
+                        }
+                        
+                        try {
+                            const data = JSON.parse(event.data);
+                            if (data.status === 'Success' || data.status === 'False' || data.status === 'Canceled') {
+                                updateStatus(`Job finished with status: ${data.status}`, 'closed');
+                                setTimeout(() => disconnect(), 2000);
+                            }
+                        } catch {}
+                    };
+
+                    eventSource.onerror = (error) => {
+                        console.error('EventSource error:', error);
+                        updateStatus('❌ Connection error or closed by server', 'error');
+                        addMessage('Connection error: ' + error.toString(), 'raw');
+                        disconnect();
+                    };
+                } else {
+                    // Không phải JSON cũng không phải SSE
+                    updateStatus('Unexpected response type: ' + contentType, 'error');
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                }
+            }).catch(error => {
+                updateStatus('❌ Failed to connect: ' + error.message, 'error');
+                addMessage('Fetch error: ' + error.toString(), 'raw');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            });
+        }
+
+        function disconnect() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                updateStatus('Disconnected', 'closed');
+                addMessage('Connection closed by user', 'raw');
+            }
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
+        }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', disconnect);
+    </script>
+</body>
+</html>
