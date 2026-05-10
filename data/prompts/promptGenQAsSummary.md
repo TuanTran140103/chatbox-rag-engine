@@ -6,13 +6,15 @@ Generate 5-8 Q&A pairs covering the "big picture" of the entire document.
 Each question must be SHORT (1-2 lines max). Do NOT copy long text into questions.
 
 # GUIDELINES
-Focus on:
-1. Objective: What is the purpose of this document?
-2. KeyTopics: What are the main points covered?
-3. Takeaways: What must the reader know?
+Generate high-level, open-ended questions covering:
+- Overall objective and purpose
+- Main topics and scope
+- Key takeaways for the reader
 
 # CONSTRAINTS
-- Questions must be simple, short, and easy to understand at a glance.
+- Questions must be broad, high-level — do NOT go deep into specific details.
+- Each question must be UNIQUE — absolutely NO duplicate or near-duplicate questions.
+- Do NOT use template-like questions (e.g. "Mục đích của tài liệu này là gì?"); vary the phrasing naturally.
 - Do NOT paste long document excerpts into questions.
 - Only use information present in the source text.
 - Each QA pair must be fully self-contained.
