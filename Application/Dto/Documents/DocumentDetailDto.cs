@@ -21,6 +21,7 @@ public record DocumentDetailDto
     public DateTime CreatedAt { get; set; }
 
     public DocumentContent Content { get; set; } = new();
+    public DocumentMetadata Metadata { get; set; } = new();
 }
 
 public record DocumentContent
@@ -28,4 +29,11 @@ public record DocumentContent
     public string? OcrMarkdown { get; set; }
     public List<ChunkQAInfor>? QAs { get; set; }
     public string? Summary { get; set; }
+}
+
+public record DocumentMetadata
+{
+    public bool IsMetadataExtracted { get; set; }
+    public string? MetadataContent { get; set; }
+    public string? MetadataError { get; set; }
 }

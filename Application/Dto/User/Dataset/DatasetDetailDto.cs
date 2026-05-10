@@ -11,5 +11,7 @@ public record DatasetDetailDto(
     int DocumentCount,
     bool IsPublicToUnit,
     DateTime CreatedAt,
-    DateTime UpdatedAt
+    DateTime UpdatedAt,
+    Guid? TemplateMetadataId = null,
+    string? TemplateMetadataName = null
 );

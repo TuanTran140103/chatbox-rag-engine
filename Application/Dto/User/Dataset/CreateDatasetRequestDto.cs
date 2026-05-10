@@ -6,4 +6,5 @@ public class CreateDatasetRequestDto
     public string? Description { get; set; }
     public Guid? OUId { get; set; }
     public bool IsPublicToUnit { get; set; } = false;
+    public Guid TemplateMetadataId { get; set; }
 }

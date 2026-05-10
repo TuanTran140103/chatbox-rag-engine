@@ -13,5 +13,7 @@ public record DatasetOverviewDto(
     string StorageDisplay,
     bool IsPublicToUnit,
     DateTime CreatedAt,
-    DateTime UpdatedAt
+    DateTime UpdatedAt,
+    Guid? TemplateMetadataId = null,
+    string? TemplateMetadataName = null
 );
