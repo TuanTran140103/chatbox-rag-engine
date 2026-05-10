@@ -92,13 +92,20 @@ public class AuthController : ControllerBase
     [Authorize]
     public async Task<IActionResult> Logout()
     {
-        await HttpContext.SignOutAsync(OpenIdConnectDefaults.AuthenticationScheme);
+        var frontendUrl = $"{_authOptions.FrontendBaseUrl.TrimEnd('/')}/login";
+        var idTokenHint = User.FindFirst("id_token_hint")?.Value;
+        _logger.LogDebug("ID token hint: {IdTokenHint}", idTokenHint);
+        if (!string.IsNullOrEmpty(idTokenHint))
+        {
+            return SignOut(
+                new AuthenticationProperties { RedirectUri = frontendUrl },
+                OpenIdConnectDefaults.AuthenticationScheme,
+                IdentityConstants.ApplicationScheme
+            );
+        }
+
         await HttpContext.SignOutAsync(IdentityConstants.ApplicationScheme);
-
-        var authority = Environment.GetEnvironmentVariable("AUTHENTIK__AUTHORITY")?.TrimEnd('/')
-            ?? "https://auth.persisttuan.site/application/o/markdown-gen-qas-web";
-
-        return Redirect($"{authority}/end-session/");
+        return Redirect(frontendUrl);
     }
 
     [HttpGet("me")]

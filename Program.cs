@@ -80,7 +80,8 @@ builder.Services.AddHangfire(config =>
         .UseRedisStorage(hangfireOptions.RedisConnection, new RedisStorageOptions
         {
             Prefix = "hangfire:markdowngenqas:",
-            ExpiryCheckInterval = TimeSpan.FromHours(1)
+            ExpiryCheckInterval = TimeSpan.FromHours(1),
+            InvisibilityTimeout = TimeSpan.FromHours(1)
         });
 });
 

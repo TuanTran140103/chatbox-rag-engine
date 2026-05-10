@@ -43,6 +43,11 @@ GET /api/v1/documents/{id:guid}/detail
     "ocrMarkdown": "# Bao cao 2025\n\n## Section 1...",
     "qas": null,
     "summary": null
+  },
+  "metadata": {
+    "isMetadataExtracted": true,
+    "metadataContent": "{\"field1\":\"value1\",\"field2\":\"value2\"}",
+    "metadataError": null
   }
 }
 ```
@@ -88,10 +93,30 @@ GET /api/v1/documents/{id:guid}/detail
 | chunk_infor.content | string | Nội dung text của chunk |
 | chunk_infor.content_summary | string? | Content summary (chỉ khi type=Summary) |
 | chunk_infor.table_chunks | ChunkInfo[] | Sub-chunks cho table |
-| qas | ChunkQA[] | Danh sách cặp câu hỏi-trả lời |
+| qas | ChunkQA[] | Danh sách cặp câu hỏi-trả lời. **v2+**: QA của table được gộp vào đây với `qa_type: "table"`. |
 | qas[].question | string | Câu hỏi |
 | qas[].answer | string | Câu trả lời (trích xuất từ document) |
 | qas[].category | string? | Thể loại câu hỏi |
+| qas[].qa_type | string? | **v2+** Loại QA: `"text"` — từ văn bản; `"table"` — từ bảng biểu |
+| table_chunk_qas | ChunkQAInfor[]? | **Deprecated (v2/v3)** — Giữ lại để tương thích ngược |
+
+### ChunkQAInfor — v2/v3 Structure (combined QA)
+
+Từ v2 trở đi, `table_chunk_qas` bị xoá. QA của table được gộp chung vào mảng `qas` với field `qa_type` phân biệt:
+
+```json
+{
+  "chunk_infor": { "type": "Text", ... },
+  "qas": [
+    { "question": "...", "answer": "...", "category": "...", "qa_type": "text" },
+    { "question": "...", "answer": "...", "category": "...", "qa_type": "table" }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| qas[].qa_type | string | `"text"` — QA từ văn bản; `"table"` — QA từ bảng biểu |
 
 ### Response (404)
 
@@ -154,9 +179,17 @@ GET /api/v1/documents/{id:guid}/content/qa
       {
         "question": "Câu hỏi gì đó?",
         "answer": "Câu trả lời chi tiết nhưng súc tích, trích xuất từ tài liệu",
-        "category": "Objective"
+        "category": "Objective",
+        "qa_type": "text"
+      },
+      {
+        "question": "Chỉ tiêu doanh thu năm 2025 là bao nhiêu?",
+        "answer": "100 tỷ",
+        "category": "Financial",
+        "qa_type": "table"
       }
-    ]
+    ],
+    "table_chunk_qas": null
   }
 ]
 ```
@@ -177,6 +210,8 @@ GET /api/v1/documents/{id:guid}/content/qa
 | qas[].question | string | Câu hỏi |
 | qas[].answer | string | Câu trả lời |
 | qas[].category | string? | Thể loại câu hỏi |
+| qas[].qa_type | string? | Loại QA: `"text"` — từ văn bản; `"table"` — từ bảng biểu trong chunk. **Chỉ có khi dùng v2 API**. |
+| table_chunk_qas | ChunkQAInfor[]? | **Deprecated (v2/v3)** — Q&A của table được gộp vào `qas` với `qa_type: "table"`. Giữ lại để tương thích ngược. |
 
 ### Response (404)
 
@@ -260,7 +295,7 @@ GET /api/v1/documents/{id:guid}/logs?type=ocr
 | documentId | guid | ID document |
 | timestamp | string | Thời gian (dd/MM/yyyy HH:mm:ss) |
 | message | string | Nội dung thông báo |
-| status | string | Trạng thái: `Pendding`, `Processing`, `Succeeded`, `Failed`, `Canceled` |
+| status | string | Trạng thái: `Pending`, `Processing`, `Succeeded`, `Failed`, `Canceled` |
 | processType | string? | Loại process: `ocr` hoặc `gen-qa` |
 | processingTime | double? | Thời gian xử lý (giây) |
 | stage | string | Giai đoạn: `OCR` hoặc `GenQA` |
@@ -309,7 +344,7 @@ data: {"documentId":"3fa85f64-5717-4562-b3fc-2c963f66afa6","timestamp":"01/06/20
 | documentId | guid | ID của document đang xử lý | `"3fa85f64-5717-4562-b3fc-2c963f66afa6"` |
 | timestamp | string | Thời gian sự kiện (dd/MM/yyyy HH:mm:ss) | `"01/06/2025 10:30:48"` |
 | message | string | Nội dung thông báo mô tả trạng thái | `"OCR processing started"` |
-| status | string | Trạng thái xử lý hiện tại | `"Processing"`, `"Succeeded"`, `"Failed"` |
+| status | string | Trạng thái xử lý hiện tại | `"Pending"`, `"Processing"`, `"Succeeded"`, `"Failed"`, `"Canceled"` |
 | processType | string? | Loại process: `ocr` hoặc `gen-qa` | `"ocr"` |
 | processingTime | double? | Thời gian xử lý tính bằng giây (null nếu chưa xong) | `120`, `null` |
 | stage | string | Giai đoạn xử lý: `OCR` hoặc `GenQA` | `"OCR"` |
@@ -319,6 +354,7 @@ data: {"documentId":"3fa85f64-5717-4562-b3fc-2c963f66afa6","timestamp":"01/06/20
 
 | Status | Ý nghĩa |
 |--------|---------|
+| `Pending` | Đã nhận yêu cầu, chờ xử lý |
 | `Processing` | Đang xử lý |
 | `Succeeded` | Xử lý thành công |
 | `Failed` | Xử lý thất bại |
@@ -376,7 +412,9 @@ POST /api/v1/documents/ocr/process/{id:guid}?modelId=chandraocr
 - **Health check trước khi xử lý**: API gọi `GET /health` đến OCR server trước mỗi lần process. Nếu server không phản hồi trong 3 giây hoặc trả về lỗi, API sẽ trả về HTTP 500 với message `"OCR server timeout after 3 seconds"`.
 - Document phải có `status = Uploaded` hoặc `status = Failed`
 - Upload file đã được thực hiện qua Dataset API
-- OCR job được tạo, document status chuyển sang `ProcessingOcr`
+- OCR job được tạo, `document.Status` chuyển sang `ProcessingOcr`
+- `DocumentJob.StatusOcr` được set là `Pending` — chờ OCR service bắt đầu
+- Khi OCR service gửi tín hiệu "Started", `StatusOcr` chuyển thành `Processing`
 - Kết quả OCR được lưu vào `Document.OcrContent`
 
 ---
@@ -453,7 +491,9 @@ POST /api/v1/documents/gen-qa/process/{id:guid}
 ### Behavior
 
 - GenQA job được tạo trong Hangfire
-- Document status chuyển sang `ProcessingGenQa`
+- `document.Status` chuyển sang `ProcessingGenQa`
+- `DocumentJob.StatusGenQa` được set là `Pending` — chờ Hangfire schedule job chạy
+- Khi job bắt đầu thực thi, `StatusGenQa` chuyển thành `Processing`
 - Kết quả Q&A được lưu vào `Document.QaContent` (JSON array)
 
 ---
@@ -488,13 +528,110 @@ POST /api/v1/documents/gen-qa/cancel/{id:guid}
 
 ---
 
-## Part 4: Download Operations
+## Part 4: Metadata Operations
 
 Base URL: `/api/v1/documents`
 
 ---
 
-### 4.1. Download Document
+### 4.1. Get Document Metadata
+
+Lấy kết quả metadata extraction của document.
+
+```
+GET /api/v1/documents/{id:guid}/metadata
+```
+
+### Response (200)
+
+```json
+{
+  "isMetadataExtracted": true,
+  "metadataContent": "{\"field1\":\"value1\",\"field2\":\"value2\"}",
+  "metadataError": null
+}
+```
+
+### Response Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| isMetadataExtracted | bool | Đã extract metadata chưa |
+| metadataContent | string? | Nội dung metadata (JSON theo template schema của Dataset) |
+| metadataError | string? | Lỗi extract metadata (nếu có) |
+
+### Response (404)
+
+```json
+"File not found"
+```
+
+---
+
+### 4.2. Update Document Metadata (Human Review)
+
+Ghi đè metadata sau khi human review. Dùng khi AI extract sai hoặc muốn sửa tay.
+
+```
+PUT /api/v1/documents/{id:guid}/metadata
+```
+
+### Request Body
+
+```json
+{
+  "metadataContent": "{\"field1\":\"corrected\",\"field2\":\"value2\"}",
+  "isExtracted": true
+}
+```
+
+### Request Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| metadataContent | string | Yes | Nội dung metadata JSON |
+| isExtracted | bool | Yes | Đánh dấu metadata đã được duyệt/chấp nhận. Nếu `true`, set `IsMetadataExtracted = true` |
+
+### Response (200)
+
+```json
+{
+  "message": "Metadata updated successfully"
+}
+```
+
+### Response (400)
+
+```json
+{
+  "error": "Validation error message"
+}
+```
+
+### Response (404)
+
+```json
+{
+  "error": "Document not found"
+}
+```
+
+### Behavior
+
+- Cập nhật `Document.MetadataContent` với nội dung từ request body
+- Chỉ set `Document.IsMetadataExtracted = true` nếu `isExtracted = true`
+- Không trigger lại GenQA hay OCR
+- Dùng cho human review override kết quả AI extraction
+
+---
+
+## Part 5: Download Operations
+
+Base URL: `/api/v1/documents`
+
+---
+
+### 5.1. Download Document
 
 Tải xuống file gốc hoặc nội dung đã xử lý.
 
@@ -506,15 +643,25 @@ GET /api/v1/documents/{id:guid}/download?scope=original
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| scope | string | original | Phạm vi download: `original`, `qa-markdown`, `qa-json` |
+| scope | string | original | Phạm vi download: `original`, `ocr-markdown`, `qa-markdown`, `all` |
 
 ### Scope Values
 
 | Scope | Content-Type | Description |
 |-------|-------------|-------------|
-| `original` | application/pdf | File gốc đã upload |
+| `original` | application/pdf | File gốc đã upload (lấy từ S3) |
+| `ocr-markdown` | text/markdown | OCR content dạng Markdown |
 | `qa-markdown` | text/markdown | Q&A content xuất ra dạng Markdown |
-| `qa-json` | application/json | Q&A content xuất ra dạng JSON |
+| `all` | application/zip | ZIP chứa tất cả: original + OCR + Q&A + Summary |
+
+### `all` scope — nội dung trong ZIP
+
+| File trong ZIP | Điều kiện |
+|----------------|-----------|
+| `{filename}.pdf` (hoặc .docx) | Nếu file gốc tồn tại |
+| `{filename}.md` | Nếu đã OCR |
+| `{filename}_QAs.md` | Nếu đã gen Q&A |
+| `{filename}_Summary.md` | Nếu có summary |
 
 ### Response (200)
 
@@ -523,7 +670,7 @@ File stream với Content-Type và Content-Disposition header phù hợp.
 ### Response (400)
 
 ```json
-"Invalid scope"
+"Invalid scope. Allowed values: original, ocr-markdown, qa-markdown, all"
 ```
 
 ### Response (404)
@@ -543,25 +690,41 @@ File stream với Content-Type và Content-Disposition header phù hợp.
 
 ---
 
-## Document Status Values
+## Document Status Values (`StatusDocument`)
 
 | Status | Ý nghĩa |
 |--------|---------|
 | `Uploaded` | File vừa upload, chưa xử lý gì |
-| `ProcessingOcr` | Đang chạy OCR |
+| `ProcessingOcr` | Đang chạy OCR (hoặc đang chờ OCR service bắt đầu) |
 | `Successed` | OCR hoàn tất, đã gen Q&A thành công |
 | `Failed` | Xử lý thất bại (OCR hoặc GenQA lỗi) |
-| `ProcessingGenQa` | Đang gen Q&A |
+| `ProcessingGenQa` | Đang gen Q&A (hoặc đang chờ Hangfire schedule chạy) |
 | `Canceled` | User hủy tiến trình xử lý |
 
 ---
 
-## Processing Log Status Values
+## Job Status Values (`StatusJob`)
+
+`DocumentJob` có trường `StatusOcr` và `StatusGenQa` với các giá trị:
 
 | Status | Ý nghĩa |
 |--------|---------|
-| `Pendding` | Đang chờ |
-| `Processing` | Đang xử lý |
+| `Pending` | Đã nhận yêu cầu, chờ bắt đầu |
+| `Processing` | Đang xử lý thực tế |
 | `Succeeded` | Thành công |
 | `Failed` | Thất bại |
 | `Canceled` | Bị hủy |
+
+**Ví dụ luồng trạng thái cho OCR:**
+```
+API call → StatusOcr = Pending (chờ OCR service)
+Started  → StatusOcr = Processing (đang OCR thực tế)
+Xong     → StatusOcr = Succeeded
+```
+
+**Ví dụ luồng trạng thái cho GenQA:**
+```
+API call → StatusGenQa = Pending (chờ Hangfire run)
+Job chạy → StatusGenQa = Processing (đang gen QA thực tế)
+Xong     → StatusGenQa = Succeeded
+```

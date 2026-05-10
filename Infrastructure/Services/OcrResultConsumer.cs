@@ -462,6 +462,8 @@ public class OcrResultConsumer : BackgroundService, IAsyncDisposable
                 doc.OcrContent = transformedMarkdown;
                 doc.Status = StatusDocument.Successed;
                 doc.IsOcred = true;
+                doc.SummaryContent = null;
+                doc.QaSummaryContent = null;
                 uow.Documents.Update(doc);
 
                 var job = await uow.DocumentJobs.GetByDocumentIdAsync(docId);

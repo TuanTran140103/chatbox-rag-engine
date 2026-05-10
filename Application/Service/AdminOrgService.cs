@@ -1,8 +1,10 @@
 using MarkdownGenQAs.Application.Dto.Admin.Org;
 using MarkdownGenQAs.Application.Interfaces.Repository;
 using MarkdownGenQAs.Application.Interfaces.Services;
+using MarkdownGenQAs.Infrastructure;
 using MarkdownGenQAs.Models;
 using MarkdownGenQAs.Models.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace MarkdownGenQAs.Application.Service;
 
@@ -10,12 +12,14 @@ public class AdminOrgService
 {
     private readonly IUnitOfWork _uow;
     private readonly IAccessControlService _accessControl;
+    private readonly ApplicationContext _context;
     private readonly ILogger<AdminOrgService> _logger;
 
-    public AdminOrgService(IUnitOfWork uow, IAccessControlService accessControl, ILogger<AdminOrgService> logger)
+    public AdminOrgService(IUnitOfWork uow, IAccessControlService accessControl, ApplicationContext context, ILogger<AdminOrgService> logger)
     {
         _uow = uow;
         _accessControl = accessControl;
+        _context = context;
         _logger = logger;
     }
 
@@ -315,15 +319,24 @@ public class AdminOrgService
             }
 
             ou.Level = parent.Level + 1;
+            await _uow.OrganizationUnits.AddAsync(ou);
             ou.Path = $"{parent.Path}/{ou.Id}";
         }
         else
         {
             ou.Level = 0;
+            await _uow.OrganizationUnits.AddAsync(ou);
             ou.Path = ou.Id.ToString();
         }
 
-        await _uow.OrganizationUnits.AddAsync(ou);
+        _context.SystemStatistics.Add(new SystemStatistics
+        {
+            OUId = ou.Id,
+            TotalDatasets = 0,
+            TotalDocuments = 0,
+            TotalStorageUsage = 0
+        });
+
         await _uow.SaveChangesAsync();
 
         return new ServiceResult<OrgTreeDto> { IsSuccess = true, Data = new OrgTreeDto(ou.Id, ou.Name, ou.Code, ou.Level, 0, 0, []) };
@@ -440,37 +453,26 @@ public class AdminOrgService
             return new ServiceResult { IsSuccess = false, ErrorMessage = msg };
         }
 
-        var allOUs = (await _uow.OrganizationUnits.GetAllAsync()).ToList();
-        var childrenLookup = allOUs.ToLookup(o => o.ParentId);
-        var directChildren = childrenLookup[ouId].ToList();
-
-        foreach (var child in directChildren)
+        using var transaction = await _context.Database.BeginTransactionAsync();
+        try
         {
-            child.ParentId = null;
-            _uow.OrganizationUnits.Update(child);
-            RecalculatePathForSubtree(child, allOUs, childrenLookup);
+            _uow.OrganizationUnits.Delete(ou);
+
+            var stats = await _context.SystemStatistics
+                .FirstOrDefaultAsync(s => s.OUId == ouId);
+            if (stats != null)
+                _context.SystemStatistics.Remove(stats);
+
+            await _uow.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            throw;
         }
 
-        var datasets = await _uow.Datasets
-            .FindAsync(d => d.OUId.HasValue && d.OUId.Value == ouId);
-        foreach (var ds in datasets)
-        {
-            ds.OUId = null;
-            ds.IsPublicToUnit = false;
-            _uow.Datasets.Update(ds);
-        }
-
-        var shares = await _uow.AccessShares
-            .FindAsync(s => s.ShareToOUId.HasValue && s.ShareToOUId.Value == ouId);
-        foreach (var share in shares)
-        {
-            share.ShareToOUId = null;
-            _uow.AccessShares.Update(share);
-        }
-
-        _uow.OrganizationUnits.Delete(ou);
-
-        await _uow.SaveChangesAsync();
+        _logger.LogInformation("OU {OUId} soft-deleted (trash)", ouId);
         return new ServiceResult { IsSuccess = true };
     }
 

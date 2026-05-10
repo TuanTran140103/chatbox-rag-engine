@@ -1,6 +1,8 @@
+using System.Runtime.CompilerServices;
 using MarkdownGenQAs.Application.Interfaces.Services;
 using MarkdownGenQAs.Models;
 using MarkdownGenQAs.Application.Interfaces.Repository;
+using MarkdownGenQAs.Models.Enum;
 
 namespace MarkdownGenQAs.Application.Service;
 
@@ -20,9 +22,64 @@ public class NotificationService
         return _broadcaster.SubscribeAsync(processType, documentId, ct);
     }
 
-    public IAsyncEnumerable<NotificationMessage> SubscribeWithResumeAsync(string processType, Guid documentId, string? afterId, CancellationToken ct)
+    public async IAsyncEnumerable<NotificationMessage> SubscribeWithResumeAsync(
+        string processType,
+        Guid documentId,
+        string? afterId,
+        [EnumeratorCancellation] CancellationToken ct)
     {
-        return _broadcaster.SubscribeWithResumeAsync(processType, documentId, afterId, ct);
+        var document = await _uow.Documents.GetByIdAsync(documentId);
+        if (document == null)
+        {
+            yield return new NotificationMessage
+            {
+                DocumentId = documentId,
+                Status = "not_found",
+                Message = "Document not found",
+                ProcessType = processType
+            };
+            yield break;
+        }
+
+        var documentJob = await _uow.DocumentJobs.GetByDocumentIdAsync(documentId);
+
+        switch (processType)
+        {
+            case "ocr":
+                if (document.Status != StatusDocument.ProcessingOcr
+                    || (documentJob?.StatusOcr != StatusJob.Processing && documentJob?.StatusOcr != StatusJob.Pending))
+                {
+                    yield return new NotificationMessage
+                    {
+                        DocumentId = documentId,
+                        Status = document.Status.ToString(),
+                        Message = $"OCR is not currently processing. Document status: {document.Status}",
+                        ProcessType = processType
+                    };
+                    yield break;
+                }
+                break;
+
+            case "gen-qa":
+                if (document.Status != StatusDocument.ProcessingGenQa
+                    || (documentJob?.StatusGenQa != StatusJob.Processing && documentJob?.StatusGenQa != StatusJob.Pending))
+                {
+                    yield return new NotificationMessage
+                    {
+                        DocumentId = documentId,
+                        Status = document.Status.ToString(),
+                        Message = $"GenQA is not currently processing. Document status: {document.Status}",
+                        ProcessType = processType
+                    };
+                    yield break;
+                }
+                break;
+        }
+
+        await foreach (var message in _broadcaster.SubscribeWithResumeAsync(processType, documentId, afterId, ct))
+        {
+            yield return message;
+        }
     }
 
     public async Task<ServiceResult<IEnumerable<NotificationMessage>>> GetHistoryAsync(Guid documentId, string type)

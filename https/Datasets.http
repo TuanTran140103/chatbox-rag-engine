@@ -1,0 +1,97 @@
+@MarkdownGenQAs_HostAddress = http://localhost:5184
+@id = 00000000-0000-0000-0000-000000000000
+@parentId = 00000000-0000-0000-0000-000000000000
+
+# ==============================================================================
+# DATASET CRUD
+# ==============================================================================
+
+### 1. Get My Datasets (Paginated)
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/datasets?page=1&pageSize=20
+Accept: application/json
+
+### 2. Get Dataset by ID
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/datasets/{{id}}
+Accept: application/json
+
+### 3. Create Dataset
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/datasets
+Content-Type: application/json
+Accept: application/json
+
+{
+  "name": "My New Dataset",
+  "description": "Dataset description"
+}
+
+### 4. Update Dataset
+PUT {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/datasets/{{id}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "name": "Updated Dataset Name",
+  "description": "Updated description"
+}
+
+### 5. Delete Dataset
+DELETE {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/datasets/{{id}}
+
+
+# ==============================================================================
+# DATASET ITEMS
+# ==============================================================================
+
+### 6. Get Dataset Items
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/datasets/{{id}}/items?parentId={{parentId}}
+Accept: application/json
+
+### 7. Create Folder Item
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/datasets/{{id}}/create-item
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="type"
+Content-Type: text/plain
+
+0
+--boundary
+Content-Disposition: form-data; name="name"
+Content-Type: text/plain
+
+NewFolder
+--boundary
+Content-Disposition: form-data; name="parentId"
+Content-Type: text/plain
+
+{{parentId}}
+--boundary--
+
+### 8. Create Document Item (Upload File)
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/datasets/{{id}}/create-item
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="type"
+Content-Type: text/plain
+
+1
+--boundary
+Content-Disposition: form-data; name="name"
+Content-Type: text/plain
+
+document.pdf
+--boundary
+Content-Disposition: form-data; name="parentId"
+Content-Type: text/plain
+
+{{parentId}}
+--boundary
+Content-Disposition: form-data; name="file"; filename="test.pdf"
+Content-Type: application/pdf
+
+< ./data/tests/test.pdf
+--boundary--
+
+### 9. Delete Dataset Item
+DELETE {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/datasets/{{id}}/items/{{parentId}}

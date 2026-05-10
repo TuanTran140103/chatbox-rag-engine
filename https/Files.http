@@ -1,4 +1,4 @@
-@MarkdownGenQAs_HostAddress = https://localhost:7128
+@MarkdownGenQAs_HostAddress = http://localhost:5184
 @id = 5e404ebe-9c9f-440d-9e1a-bf613609e33b
 @categoryId = d48d8b16-f4ee-4f63-bf47-7d628306d02c
 @taskId = tuantran-2281988f-ac43-49a9-ba64-25e6a4a028e0
@@ -15,7 +15,7 @@ Content-Type: application/pdf
 --boundary--
 
 ### 2. Get all files
-GET {{MarkdownGenQAs_HostAddress}}/api/v1/files
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/documents
 Accept: application/json
 
 ### 3. Get file by ID

@@ -4,6 +4,7 @@ using MarkdownGenQAs.Application.Interfaces.Repository;
 using MarkdownGenQAs.Application.Interfaces.Services;
 using MarkdownGenQAs.Helper;
 using MarkdownGenQAs.Infrastructure;
+using MarkdownGenQAs.Infrastructure.Interceptors;
 using MarkdownGenQAs.Models;
 using MarkdownGenQAs.Models.Entities;
 using MarkdownGenQAs.Models.Enum;
@@ -45,6 +46,7 @@ public class DatasetService
         var query = _context.Datasets
             .Include(d => d.OrganizationUnit)
             .Include(d => d.Items)
+            .Include(d => d.TemplateMetadata)
             .AsNoTracking()
             .Where(d => accessibleIds.Contains(d.Id));
 
@@ -65,7 +67,9 @@ public class DatasetService
             d.Items?.Count(i => i.DocumentId.HasValue) ?? 0,
             d.IsPublicToUnit,
             d.CreatedAt,
-            d.UpdatedAt
+            d.UpdatedAt,
+            d.TemplateMetadataId,
+            d.TemplateMetadata?.Name
         )).ToList();
 
         return new ServiceResult<PagedResponse<DatasetListDto>>
@@ -88,6 +92,7 @@ public class DatasetService
             .Include(d => d.Owner)
             .Include(d => d.OrganizationUnit)
             .Include(d => d.Items)
+            .Include(d => d.TemplateMetadata)
             .AsNoTracking()
             .FirstOrDefaultAsync(d => d.Id == datasetId);
 
@@ -111,7 +116,9 @@ public class DatasetService
                 dataset.Items?.Count(i => i.DocumentId.HasValue) ?? 0,
                 dataset.IsPublicToUnit,
                 dataset.CreatedAt,
-                dataset.UpdatedAt
+                dataset.UpdatedAt,
+                dataset.TemplateMetadataId,
+                dataset.TemplateMetadata?.Name
             )
         };
     }
@@ -132,6 +139,15 @@ public class DatasetService
                 return new ServiceResult<DatasetDetailDto> { IsSuccess = false, ErrorMessage = "You do not belong to the specified organization unit" };
         }
 
+        var templateExists = await _context.TemplateMetadatas
+            .AnyAsync(t => t.Id == dto.TemplateMetadataId);
+        if (!templateExists)
+            return new ServiceResult<DatasetDetailDto>
+            {
+                IsSuccess = false,
+                ErrorMessage = "Template metadata not found"
+            };
+
         var dataset = new Dataset
         {
             Name = dto.Name.Trim(),
@@ -139,6 +155,7 @@ public class DatasetService
             OwnerUserId = userId,
             OUId = dto.OUId,
             IsPublicToUnit = dto.IsPublicToUnit,
+            TemplateMetadataId = dto.TemplateMetadataId,
             CountDocument = 0
         };
 
@@ -156,6 +173,7 @@ public class DatasetService
             .Include(d => d.Owner)
             .Include(d => d.OrganizationUnit)
             .Include(d => d.Items)
+            .Include(d => d.TemplateMetadata)
             .FirstOrDefaultAsync(d => d.Id == datasetId);
 
         if (dataset == null)
@@ -185,6 +203,26 @@ public class DatasetService
             dataset.IsPublicToUnit = dto.IsPublicToUnit.Value;
         }
 
+        if (dto.TemplateMetadataId.HasValue)
+        {
+            if (dataset.TemplateMetadataId.HasValue)
+                return new ServiceResult<DatasetDetailDto>
+                {
+                    IsSuccess = false,
+                    ErrorMessage = "Cannot change template metadata once assigned"
+                };
+
+            var templateExists = await _context.TemplateMetadatas
+                .AnyAsync(t => t.Id == dto.TemplateMetadataId.Value);
+            if (!templateExists)
+                return new ServiceResult<DatasetDetailDto>
+                {
+                    IsSuccess = false,
+                    ErrorMessage = "Template metadata not found"
+                };
+            dataset.TemplateMetadataId = dto.TemplateMetadataId;
+        }
+
         dataset.UpdatedAt = DateTime.UtcNow;
 
         _uow.Datasets.Update(dataset);
@@ -206,7 +244,9 @@ public class DatasetService
                 dataset.Items?.Count(i => i.DocumentId.HasValue) ?? 0,
                 dataset.IsPublicToUnit,
                 dataset.CreatedAt,
-                dataset.UpdatedAt
+                dataset.UpdatedAt,
+                dataset.TemplateMetadataId,
+                dataset.TemplateMetadata?.Name
             )
         };
     }
@@ -214,7 +254,6 @@ public class DatasetService
     public async Task<ServiceResult> DeleteDatasetAsync(Guid userId, Guid datasetId)
     {
         var dataset = await _context.Datasets
-            .Include(d => d.Items)
             .FirstOrDefaultAsync(d => d.Id == datasetId);
 
         if (dataset == null)
@@ -223,49 +262,30 @@ public class DatasetService
         if (!await _accessControl.CanDeleteDatasetAsync(userId, dataset))
             return new ServiceResult { IsSuccess = false, ErrorMessage = "Dataset not found" };
 
-        await _uow.BeginTransactionAsync();
+        using var transaction = await _context.Database.BeginTransactionAsync();
         try
         {
-            if (dataset.Items?.Count > 0)
+            _uow.Datasets.Delete(dataset);
+
+            if (dataset.OUId.HasValue)
             {
-                var documentIds = dataset.Items
-                    .Where(i => i.DocumentId.HasValue)
-                    .Select(i => i.DocumentId!.Value)
-                    .ToList();
-
-                if (documentIds.Count > 0)
-                {
-                    var documents = await _context.Documents
-                        .Where(d => documentIds.Contains(d.Id))
-                        .ToListAsync();
-
-                    _context.Documents.RemoveRange(documents);
-                }
-
-                _context.DatasetItems.RemoveRange(dataset.Items);
+                var ouStats = await _context.SystemStatistics
+                    .FirstOrDefaultAsync(s => s.OUId == dataset.OUId);
+                if (ouStats != null)
+                    ouStats.TotalDatasets = Math.Max(0, ouStats.TotalDatasets - 1);
             }
 
-            var shares = await _context.AccessShares
-                .Where(s => s.DatasetId == datasetId)
-                .ToListAsync();
-
-            if (shares.Count > 0)
-                _context.AccessShares.RemoveRange(shares);
-
-            _uow.Datasets.Delete(dataset);
             await _uow.SaveChangesAsync();
-            await _uow.CommitTransactionAsync();
-
-            _logger.LogInformation("Dataset {DatasetId} deleted by user {UserId}", datasetId, userId);
-
-            return new ServiceResult { IsSuccess = true };
+            await transaction.CommitAsync();
         }
-        catch (Exception ex)
+        catch
         {
-            await _uow.RollbackTransactionAsync();
-            _logger.LogError(ex, "Failed to delete dataset {DatasetId}", datasetId);
-            return new ServiceResult { IsSuccess = false, ErrorMessage = "An error occurred while deleting the dataset" };
+            await transaction.RollbackAsync();
+            throw;
         }
+
+        _logger.LogInformation("Dataset {DatasetId} soft-deleted by user {UserId}", datasetId, userId);
+        return new ServiceResult { IsSuccess = true };
     }
 
     public async Task<ServiceResult<DatasetItemsResponseDto>> GetDatasetItemsAsync(Guid userId, Guid datasetId, Guid? parentId)
@@ -303,7 +323,8 @@ public class DatasetService
 
         var items = await _context.DatasetItems
             .AsNoTracking()
-            .Where(i => i.DatasetId == datasetId && i.ParentId == parentId)
+            .Where(i => i.DatasetId == datasetId && i.ParentId == parentId && !_context.DatasetItems
+                .Any(d => d.IsDeleted && d.ItemType == DatasetItemType.Folder && i.Path.StartsWith(d.Path) && i.Path != d.Path))
             .OrderBy(i => i.ItemType)
             .ThenBy(i => i.SortOrder)
             .ThenBy(i => i.Name)
@@ -535,6 +556,8 @@ public class DatasetService
             _uow.Documents.Update(document);
             await _uow.SaveChangesAsync();
 
+            AuditEntityInterceptor.UpdateDocumentStatistics(_context, dataset.OUId, 1);
+
             _logger.LogInformation("Document {FileName} added to dataset {DatasetId} by user {UserId}", documentName, datasetId, userId);
 
             return new ServiceResult<CreateItemResponseDto>
@@ -583,56 +606,10 @@ public class DatasetService
         if (item == null)
             return new ServiceResult { IsSuccess = false, ErrorMessage = "Dataset not found" };
 
-        await _uow.BeginTransactionAsync();
-        try
-        {
-            if (item.ItemType == DatasetItemType.Folder)
-            {
-                var childItems = await _context.DatasetItems
-                    .Where(i => i.Path.StartsWith(item.Path) && i.Id != itemId)
-                    .ToListAsync();
+        _context.DatasetItems.Remove(item);
+        await _uow.SaveChangesAsync();
 
-                var allItems = childItems.Concat(new[] { item }).ToList();
-
-                var documentIds = allItems
-                    .Where(i => i.DocumentId.HasValue)
-                    .Select(i => i.DocumentId!.Value)
-                    .ToList();
-
-                if (documentIds.Count > 0)
-                {
-                    var documents = await _context.Documents
-                        .Where(d => documentIds.Contains(d.Id))
-                        .ToListAsync();
-
-                    _context.Documents.RemoveRange(documents);
-                }
-
-                _context.DatasetItems.RemoveRange(allItems);
-            }
-            else
-            {
-                var documents = await _context.Documents
-                    .Where(d => d.Id == item.DocumentId)
-                    .ToListAsync();
-
-                if (documents.Count > 0)
-                    _context.Documents.RemoveRange(documents);
-
-                _context.DatasetItems.Remove(item);
-            }
-
-            await _uow.SaveChangesAsync();
-            await _uow.CommitTransactionAsync();
-
-            _logger.LogInformation("DatasetItem {ItemId} deleted by user {UserId}", itemId, userId);
-            return new ServiceResult { IsSuccess = true };
-        }
-        catch (Exception ex)
-        {
-            await _uow.RollbackTransactionAsync();
-            _logger.LogError(ex, "Failed to delete dataset item {ItemId}", itemId);
-            return new ServiceResult { IsSuccess = false, ErrorMessage = "An error occurred while deleting the item" };
-        }
+        _logger.LogInformation("DatasetItem {ItemId} soft-deleted by user {UserId}", itemId, userId);
+        return new ServiceResult { IsSuccess = true };
     }
 }

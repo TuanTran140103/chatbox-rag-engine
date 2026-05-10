@@ -119,6 +119,8 @@ public class DocumentController : ControllerBase
         Response.Headers["Connection"] = "keep-alive";
         Response.Headers["X-Accel-Buffering"] = "no";
 
+        _logger.LogInformation("SSE notification stream started. DocumentId: {DocumentId}, Type: {Type}, LastEventId: {LastEventId}", id, type, lastEventId ?? "null");
+
         try
         {
             await foreach (var message in _notificationService.SubscribeWithResumeAsync(type, id, lastEventId, ct))
@@ -127,13 +129,18 @@ public class DocumentController : ControllerBase
                 {
                     await Response.WriteAsync($"id: {message.EntryId}\r\n", ct);
                 }
-                _logger.LogInformation($"Received notification: {System.Text.Json.JsonSerializer.Serialize(message)}");
+                _logger.LogDebug("SSE notification sent. DocumentId: {DocumentId}, EntryId: {EntryId}", id, message.EntryId);
                 await Response.WriteAsync($"data: {System.Text.Json.JsonSerializer.Serialize(message)}\r\n\r\n", ct);
                 await Response.Body.FlushAsync(ct);
             }
         }
         catch (OperationCanceledException)
         {
+            _logger.LogInformation("SSE notification stream cancelled. DocumentId: {DocumentId}, Type: {Type}", id, type);
+        }
+        finally
+        {
+            _logger.LogInformation("SSE notification stream disconnected. DocumentId: {DocumentId}, Type: {Type}", id, type);
         }
     }
 
@@ -289,13 +296,53 @@ public class DocumentController : ControllerBase
 
     #endregion
 
+    #region Metadata Operations
+
+    /// <summary>
+    /// Get document metadata (extraction result)
+    /// </summary>
+    [HttpGet("{id}/metadata")]
+    [ProducesResponseType(typeof(DocumentMetadata), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<DocumentMetadata>> GetMetadata(Guid id)
+    {
+        var result = await _documentService.GetDetailAsync(id);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorMessage == "File not found") return NotFound();
+            return StatusCode(500, result.ErrorMessage);
+        }
+        return Ok(result.Data!.Metadata);
+    }
+
+    /// <summary>
+    /// Update document metadata (human review/override)
+    /// </summary>
+    [HttpPut("{id}/metadata")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UpdateMetadata(Guid id, [FromBody] UpdateMetadataRequestDto dto)
+    {
+        var result = await _documentService.UpdateMetadataAsync(id, dto.MetadataContent, dto.IsExtracted);
+        if (!result.IsSuccess)
+        {
+            if (result.ErrorMessage == "Document not found")
+                return NotFound(new { error = result.ErrorMessage });
+            return BadRequest(new { error = result.ErrorMessage });
+        }
+        return Ok(new { message = "Metadata updated successfully" });
+    }
+
+    #endregion
+
     #region Download Operations
 
     /// <summary>
     /// Consolidated download endpoint
     /// </summary>
     /// <param name="id">File ID</param>
-    /// <param name="scope">Download scope: original, qa-markdown, qa-json</param>
+    /// <param name="scope">Download scope: original, ocr-markdown, qa-markdown, all</param>
     [HttpGet("{id}/download")]
     public async Task<IActionResult> Download(Guid id, [FromQuery] string scope = "original")
     {

@@ -156,13 +156,6 @@ public class AdminController : ControllerBase
         return Ok(result);
     }
 
-    [HttpPost("stats/recalculate")]
-    public async Task<IActionResult> RecalculateStats()
-    {
-        await _adminStatsService.RecalculateStatsAsync();
-        return Ok(new { message = "Statistics recalculated successfully" });
-    }
-
     #endregion
 
     #region Dataset Management

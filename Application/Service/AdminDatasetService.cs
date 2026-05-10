@@ -1,23 +1,20 @@
 using MarkdownGenQAs.Application.Dto.Admin.Dataset;
-using MarkdownGenQAs.Application.Interfaces.Repository;
 using MarkdownGenQAs.Infrastructure;
 using MarkdownGenQAs.Models;
+using MarkdownGenQAs.Models.Entities;
 using Microsoft.EntityFrameworkCore;
 
 namespace MarkdownGenQAs.Application.Service;
 
 public class AdminDatasetService
 {
-    private readonly IUnitOfWork _uow;
     private readonly ApplicationContext _context;
     private readonly ILogger<AdminDatasetService> _logger;
 
     public AdminDatasetService(
-        IUnitOfWork uow,
         ApplicationContext context,
         ILogger<AdminDatasetService> logger)
     {
-        _uow = uow;
         _context = context;
         _logger = logger;
     }
@@ -34,9 +31,11 @@ public class AdminDatasetService
             .Include(d => d.Owner)
             .Include(d => d.OrganizationUnit)
             .Include(d => d.Items)
+            .Include(d => d.TemplateMetadata)
             .OrderByDescending(d => d.UpdatedAt)
             .Skip(skip)
             .Take(pageSize)
+            .AsNoTracking()
             .ToListAsync();
 
         var result = new List<DatasetOverviewDto>();
@@ -57,7 +56,9 @@ public class AdminDatasetService
                 FormatBytes(totalStorage),
                 ds.IsPublicToUnit,
                 ds.CreatedAt,
-                ds.UpdatedAt
+                ds.UpdatedAt,
+                ds.TemplateMetadataId,
+                ds.TemplateMetadata?.Name
             ));
         }
 
@@ -66,13 +67,15 @@ public class AdminDatasetService
 
     public async Task<int> GetTotalDatasetsCountAsync()
     {
-        return await _context.Datasets.CountAsync();
+        return await _context.Datasets.AsNoTracking().CountAsync();
     }
 
     public async Task<List<DatasetItemDto>> GetDatasetItemsAsync(Guid datasetId, Guid? parentId = null)
     {
-        var items = (await _uow.DatasetItems
-            .FindAsync(di => di.DatasetId == datasetId && di.ParentId == parentId)).ToList();
+        var items = await _context.DatasetItems
+            .Where(di => di.DatasetId == datasetId && di.ParentId == parentId)
+            .AsNoTracking()
+            .ToListAsync();
 
         var result = new List<DatasetItemDto>();
         foreach (var item in items)
@@ -96,7 +99,7 @@ public class AdminDatasetService
             ));
         }
 
-        return result.OrderBy(i => i.ItemType == "Folder" ? 0 : 1).ThenBy(i => i.Name).ToList();
+        return result.OrderBy(i => i.ItemType == DatasetItemType.Folder.ToString() ? 0 : 1).ThenBy(i => i.Name).ToList();
     }
 
     public async Task<ServiceResult> TransferOwnershipAsync(Guid datasetId, Guid newOwnerUserId)
@@ -131,6 +134,7 @@ public class AdminDatasetService
             .Include(s => s.ShareToOU)
             .Include(s => s.Grantor)
             .Where(s => s.DatasetId == datasetId)
+            .AsNoTracking()
             .ToListAsync();
 
         return shares.Select(s => new AccessShareDto(

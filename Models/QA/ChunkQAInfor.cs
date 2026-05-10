@@ -8,6 +8,10 @@ public class ChunkQA : QA
     [Description("Thể loại câu hỏi")]
     [JsonPropertyName("category")]
     public string? Category { get; set; }
+
+    [Description("Phân loại QA: text hoặc table")]
+    [JsonPropertyName("qa_type")]
+    public string? QaType { get; set; }
 }
 
 public class ChunkQAInfor

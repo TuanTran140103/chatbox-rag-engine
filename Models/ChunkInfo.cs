@@ -19,6 +19,9 @@ public class ChunkInfo
     [JsonPropertyName("content_summary")]
     public string? ContentSummary { get; set; }
 
-    [JsonPropertyName("table_chunks")]
-    public List<ChunkInfo> TableChunks { get; set; } = new();
+    [JsonIgnore]
+    public bool NeedsSummary { get; set; }
+
+    [JsonPropertyName("index")]
+    public int Index { get; set; }
 }

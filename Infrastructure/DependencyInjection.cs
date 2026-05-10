@@ -20,6 +20,8 @@ using OpenAI;
 using Microsoft.Extensions.Options;
 using System.ClientModel;
 using MarkdownGenQAs.Infrastructure.Interceptors;
+using Amazon.Runtime;
+using System.ClientModel.Primitives;
 
 namespace GenQAServer.Infrastructure;
 
@@ -57,6 +59,7 @@ public static class DependencyInjection
                 var apiKey = !string.IsNullOrEmpty(model.ApiKey) ? model.ApiKey : settings.ApiKey;
                 if (string.IsNullOrEmpty(apiKey))
                 {
+                    // apiKey = Environment.GetEnvironmentVariable($"LlmProviders__{providerName}__ApiKey") ?? string.Empty;
                     apiKey = Environment.GetEnvironmentVariable($"LlmProviders__{providerName}__ApiKey") ?? string.Empty;
                 }
 
@@ -81,7 +84,9 @@ public static class DependencyInjection
                         new OpenAIClientOptions 
                         { 
                             Endpoint = new Uri(baseUrl),
-                            NetworkTimeout = timeout
+                            NetworkTimeout = timeout,
+                            RetryPolicy = new ClientRetryPolicy(maxRetries: 0)
+
                         });
                     
                     return openAIClient.GetChatClient(model.ModelName).AsIChatClient();
@@ -159,10 +164,7 @@ public static class DependencyInjection
         // AddDbContextPool reuses DbContext instances across requests (reduces allocation overhead)
         services.AddDbContextPool<ApplicationContext>((sp, options) =>
         {
-            options.UseNpgsql(connectionString, npgsql =>
-            {
-                npgsql.EnableRetryOnFailure();
-            });
+            options.UseNpgsql(connectionString);
             var interceptor = sp.GetRequiredService<AuditEntityInterceptor>();
             options.AddInterceptors(interceptor);
         });
@@ -207,8 +209,14 @@ public static class DependencyInjection
         services.AddScoped<AdminStatsService>();
         services.AddScoped<AdminDatasetService>();
 
+        // Template Metadata Services
+        services.AddScoped<ITemplateMetadataService, TemplateMetadataService>();
+
         // User Dataset Services
         services.AddScoped<DatasetService>();
+
+        // Trash
+        services.AddScoped<ITrashService, TrashService>();
 
         // User Services
         services.AddScoped<UserService>();

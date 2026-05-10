@@ -25,6 +25,7 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
     public DbSet<OrganizationUnit> OrganizationUnits { get; set; }
     public DbSet<UserPosition> UserPositions { get; set; }
     public DbSet<SystemStatistics> SystemStatistics { get; set; }
+    public DbSet<TemplateMetadata> TemplateMetadatas { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -138,6 +139,11 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
                   .WithMany(e => e.Datasets)
                   .HasForeignKey(e => e.OUId)
                   .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(e => e.TemplateMetadata)
+                  .WithMany(e => e.Datasets)
+                  .HasForeignKey(e => e.TemplateMetadataId)
+                  .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<DatasetItem>(entity =>
@@ -215,6 +221,10 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
             entity.Property(e => e.OcrContent).HasColumnType("text");
             entity.Property(e => e.QaContent).HasColumnType("text");
             entity.Property(e => e.SummaryContent).HasColumnType("text");
+            entity.Property(e => e.QaSummaryContent).HasColumnType("text");
+            entity.Property(e => e.MetadataContent).HasColumnType("text");
+            entity.Property(e => e.MetadataError).HasColumnType("text");
+            entity.Property(e => e.IsMetadataExtracted);
 
             entity.HasIndex(e => e.FileName)
                   .HasMethod("gin")
@@ -273,15 +283,18 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
             {
                 t.HasCheckConstraint(
                     "CK_DocumentJob_OcrBeforeGenQa",
-                    @"""StatusGenQa"" NOT IN ('Processing', 'Succeeded')
-                     OR ""StatusOcr"" = 'Succeeded'");
+                    @"""StatusGenQa"" IS NULL
+                      OR ""StatusOcr"" = 'Succeeded'
+                      OR ""StatusGenQa"" NOT IN ('Processing', 'Succeeded')");
             });
 
             entity.HasKey(e => e.Id);
             entity.Property(e => e.OcrJobId).HasMaxLength(255);
             entity.Property(e => e.GenQaJobId).HasMaxLength(255);
-            entity.Property(e => e.StatusOcr).HasConversion<string>().IsRequired();
-            entity.Property(e => e.StatusGenQa).HasConversion<string>().IsRequired();
+            entity.Property(e => e.StatusOcr).HasConversion<string>();
+            entity.Property(e => e.StatusGenQa).HasConversion<string>();
+            entity.Property(e => e.StatusMetadata).HasConversion<string>();
+            entity.Property(e => e.MetadataError).HasColumnType("text");
 
             entity.HasOne(j => j.Document)
                   .WithOne(o => o.DocumentJob)
@@ -292,12 +305,9 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
         modelBuilder.Entity<SystemStatistics>(entity =>
         {
             entity.ToTable("SystemStatistics");
-            entity.HasKey(e => e.Id);
             entity.Property(e => e.TotalDatasets).HasDefaultValue(0);
             entity.Property(e => e.TotalDocuments).HasDefaultValue(0);
             entity.Property(e => e.TotalStorageUsage).HasDefaultValue(0L);
-            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
-            entity.Property(e => e.UpdatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
 
             entity.HasOne(e => e.OU)
                   .WithMany()
@@ -305,6 +315,15 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
                   .OnDelete(DeleteBehavior.Cascade);
 
             entity.HasIndex(e => e.OUId);
+        });
+
+        modelBuilder.Entity<TemplateMetadata>(entity =>
+        {
+            entity.ToTable("TemplateMetadatas");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.Description).HasMaxLength(1000);
+            entity.Property(e => e.JsonSchema).IsRequired().HasColumnType("text");
         });
 
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())

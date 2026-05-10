@@ -56,18 +56,13 @@ public class MarkdownService : IMarkdownService
 
         if (string.IsNullOrWhiteSpace(source)) return new();
 
-        // 1. Chia nhỏ văn bản thành các ngữ cảnh xử lý (Rất nhanh, không bị block bởi AI)
         var contexts = await SplitTextByHeaderAsync(source, 1, new Stack<KeyValuePair<int, string>>(), cancellationToken);
+        _logger.LogInformation($"Done CreateChunkText: {contexts.Count} chunks.");
 
-        // 2. Chạy song song tìm bảng cho từng ngữ cảnh
-        var tableTasks = contexts.Select(async ctx =>
-        {
-            ctx.Chunk.TableChunks = await CreateChunkTableAsync(ctx.RawContent, ctx.HierarchyStack, cancellationToken);
-        });
-
-        await Task.WhenAll(tableTasks);
-
-        return contexts.Select(c => c.Chunk).ToList();
+        var chunks = contexts.Select(c => c.Chunk).ToList();
+        for (int i = 0; i < chunks.Count; i++)
+            chunks[i].Index = i + 1;
+        return chunks;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -88,82 +83,180 @@ public class MarkdownService : IMarkdownService
 
         if (string.IsNullOrWhiteSpace(source)) return new();
 
-        var blocks = MarkdownServiceHelper.GetAllBlock(source, _pipeline);
-        var headers = blocks.OfType<HeadingBlock>().ToList();
+        var tables = MarkdownServiceHelper.GetTableBlocks(source, _pipeline);
+        _logger.LogInformation("Found {Count} table(s) in source", tables.Count);
+        if (tables.Count == 0) return new();
 
-        // Danh sách segment: mỗi phần tử là (content, hierarchyPath đã resolve tại thời điểm đó)
-        var segments = new List<(string Content, string HierarchyPath)>();
+        foreach (var (b, info, idx) in tables)
+        {
+            _logger.LogInformation(
+                "  Table[blockIndex={Index}]: hasHeader={HasHeader}, {ColCount} cols, {RowCount} rows, headers=[{Headers}]",
+                idx, info.HasHeader, info.ColumnCount, info.RowCount,
+                info.HeaderCells != null ? string.Join(" | ", info.HeaderCells) : "(none)");
+        }
 
         var hierarchy = parentHierarchy != null ? CloneStack(parentHierarchy) : new Stack<KeyValuePair<int, string>>();
-        int lastPos = 0;
 
-        for (int i = 0; i < headers.Count; i++)
+        var segments = new List<List<(MarkdownServiceHelper.TableContinuationInfo Info, int Index)>>();
+        var current = new List<(MarkdownServiceHelper.TableContinuationInfo Info, int Index)>();
+        int heuristicDecisions = 0;
+        int aiCalls = 0;
+
+        for (int ti = 0; ti < tables.Count; ti++)
         {
-            var header = headers[i];
-            var headerTitle = source.Substring(header.Span.Start, header.Span.Length);
+            var (block, info, idx) = tables[ti];
 
-            // Content từ lastPos đến ngay trước header hiện tại
-            var contentBefore = source.Substring(lastPos, header.Span.Start - lastPos);
-            if (!string.IsNullOrWhiteSpace(contentBefore))
+            if (current.Count == 0)
             {
-                // Snapshot hierarchy TRƯỚC khi cập nhật header hiện tại → resolve thành string ngay
-                segments.Add((contentBefore, GetHierarchyPath(hierarchy)));
+                current.Add((info, idx));
+                _logger.LogInformation("[Segment start] Table blockIndex={Idx} added as first segment", idx);
+                continue;
             }
 
-            // Cập nhật hierarchy VỚI header hiện tại
-            UpdateHierarchyStack(hierarchy, new KeyValuePair<int, string>(header.Level, headerTitle));
-            lastPos = header.Span.End + 1;
+            _logger.LogInformation(
+                "[Decision #{Ti}/{Total}] Comparing candidate table blockIndex={Idx} (hasHeader={HasHeader}, {ColCount} cols) vs segment of {SegCount} table(s)",
+                ti + 1, tables.Count, idx, info.HasHeader, info.ColumnCount, current.Count);
+
+            var headerRefs = current.Where(x => x.Info.HasHeader).ToList();
+            _logger.LogInformation("  Header references in segment: {Count} table(s)", headerRefs.Count);
+
+            bool isContinuation;
+            string method;
+
+            if (headerRefs.Count == 0)
+            {
+                _logger.LogInformation("  -> No header references, falling back to AI...");
+                isContinuation = await CallAiFallbackForTableAsync(source, tables, current, block, idx, cancellationToken);
+                method = isContinuation ? "AI (no header ref, yes)" : "AI (no header ref, no)";
+                aiCalls++;
+            }
+            else
+            {
+                var scores = new List<double>();
+                foreach (var h in headerRefs)
+                {
+                    double score = MarkdownServiceHelper.CalculateSimilarity(h.Info, info);
+                    scores.Add(score);
+                    _logger.LogInformation("  Pair (header table idx={HIdx}) similarity: {Score:F4}", h.Index, score);
+                }
+
+                var (minScore, maxScore) = MarkdownServiceHelper.GetScoreRange(scores);
+                _logger.LogInformation("  Range: min={Min:F4}, max={Max:F4}", minScore, maxScore);
+
+                var decision = MarkdownServiceHelper.HeuristicDecisionByRange(minScore, maxScore);
+                if (decision.HasValue)
+                {
+                    isContinuation = decision.Value;
+                    method = isContinuation
+                        ? $"Heuristic (min={minScore:F4} >= 0.70)"
+                        : $"Heuristic (max={maxScore:F4} <= 0.25)";
+                    heuristicDecisions++;
+                    _logger.LogInformation("  -> {Method}: {Result}", method,
+                        isContinuation ? "CONTINUE" : "NOT CONTINUE");
+                }
+                else
+                {
+                    _logger.LogInformation("  -> Grey zone (min={Min:F4}, max={Max:F4}), falling back to AI...", minScore, maxScore);
+                    isContinuation = await CallAiFallbackForTableAsync(source, tables, current, block, idx, cancellationToken);
+                    method = $"AI (grey zone min={minScore:F4}, max={maxScore:F4})";
+                    aiCalls++;
+                }
+            }
+
+            if (isContinuation)
+            {
+                current.Add((info, idx));
+                _logger.LogInformation("  => MERGED into current segment (now {Count} tables)", current.Count);
+            }
+            else
+            {
+                segments.Add(current);
+                _logger.LogInformation("  => FINALIZED segment with {Count} tables, starting new segment", current.Count);
+                current = new() { (info, idx) };
+            }
         }
 
-        // Content còn lại phía dưới header cuối cùng
-        var contentTail = source.Substring(lastPos);
-        if (!string.IsNullOrWhiteSpace(contentTail))
+        if (current.Count > 0)
+            segments.Add(current);
+
+        _logger.LogInformation(
+            "=== DONE: {Tables} tables → {Chunks} chunks | Heuristic={H}, AI={Ai} ===",
+            tables.Count, segments.Count, heuristicDecisions, aiCalls);
+
+        var hierarchyPath = GetHierarchyPath(hierarchy);
+        var titleFallback = hierarchyPath.Contains(" --> ")
+            ? hierarchyPath[(hierarchyPath.LastIndexOf(" --> ") + 5)..]
+            : hierarchyPath;
+
+        var chunks = segments.Select((seg, ci) =>
         {
-            segments.Add((contentTail, GetHierarchyPath(hierarchy)));
-        }
+            var firstBlock = tables.First(t => t.index == seg[0].Index).block;
+            var lastBlock = tables.First(t => t.index == seg[^1].Index).block;
+            var content = source.Substring(firstBlock.Span.Start, lastBlock.Span.End - firstBlock.Span.Start + 1);
+            return new ChunkInfo
+            {
+                Content = content,
+                TokensCount = 0,
+                Type = TypeChunk.Table,
+                TittleHirarchy = hierarchyPath,
+                Title = titleFallback
+            };
+        }).ToList();
 
-        // Mỗi segment → 1 task độc lập → gọi AI để merge table bên trong
-        var tasks = segments
-            .Select(seg => GetTableChunksAsync(seg.Content, seg.HierarchyPath, cancellationToken))
-            .ToList();
-
-        var results = await Task.WhenAll(tasks);
-        var allTableChunks = results.SelectMany(r => r).ToList();
-
-        // New Batch Token Count Logic
-        if (allTableChunks.Count > 0)
+        if (chunks.Count > 0)
         {
-            _logger.LogInformation("Counting tokens for {Count} table chunks in batch", allTableChunks.Count);
             var batchRequest = new BatchCountRequest
             {
-                Items = allTableChunks.Select((c, i) => new BatchItemRequest
-                {
-                    Id = i.ToString(),
-                    Text = c.Content
-                }).ToList(),
+                Items = chunks.Select((c, i) => new BatchItemRequest { Id = i.ToString(), Text = c.Content }).ToList(),
                 ReturnTokens = true
             };
-
             try
             {
                 var batchResponse = await _tokenCountService.BatchCountAsync(batchRequest, cancellationToken);
                 var resultDict = batchResponse.Results.Where(r => r.Id != null).ToDictionary(r => r.Id!, r => r.TokenCount);
-
-                for (int i = 0; i < allTableChunks.Count; i++)
-                {
+                for (int i = 0; i < chunks.Count; i++)
                     if (resultDict.TryGetValue(i.ToString(), out int tc))
-                    {
-                        allTableChunks[i].TokensCount = tc;
-                    }
-                }
+                        chunks[i].TokensCount = tc;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Batch token count failed for table chunks. Falling back to 0.");
+                _logger.LogError(ex, "Batch token count failed for table chunks.");
+                throw;
             }
         }
 
-        return allTableChunks;
+        _logger.LogInformation("CreateChunkTableAsync done: {Count} table chunks", chunks.Count);
+        return chunks;
+    }
+
+    private async Task<bool> CallAiFallbackForTableAsync(
+        string source,
+        List<(Block block, MarkdownServiceHelper.TableContinuationInfo Info, int index)> allTables,
+        List<(MarkdownServiceHelper.TableContinuationInfo Info, int Index)> segment,
+        Block candidateBlock,
+        int candidateIndex,
+        CancellationToken ct)
+    {
+        var firstBlock = allTables.First(t => t.index == segment[0].Index).block;
+        var t1 = source.Substring(firstBlock.Span.Start, candidateBlock.Span.End - firstBlock.Span.Start + 1);
+        var t2 = MarkdownServiceHelper.GetBlockText(source, candidateBlock);
+
+        _logger.LogInformation(
+            "    [AI Call] Segment [idx {SegFirst}..{SegLast}] vs candidate idx={CandIdx}, context={CtxLen}ch, target={TgtLen}ch",
+            segment[0].Index, segment[^1].Index, candidateIndex, t1.Length, t2.Length);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var choice = await _llmService.ChatChoiceAsync(
+            LlmChatHelper.CreateChatMessageChoice(t1, t2, _systemPrompts.Choice),
+            new() { "Yes", "No" },
+            ct);
+        sw.Stop();
+
+        var result = !string.IsNullOrEmpty(choice) && choice.Trim().StartsWith("y", StringComparison.OrdinalIgnoreCase);
+        _logger.LogInformation(
+            "    [AI Call] Done: choice='{Choice}', parsed={Result}, elapsed={Elapsed:F2}s",
+            choice ?? "(null)", result, sw.Elapsed.TotalSeconds);
+        return result;
     }
 
     /// <summary>
@@ -261,40 +354,105 @@ public class MarkdownService : IMarkdownService
         return sb.ToString();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Private — chunk splitting (dùng bởi CreateChunkAsync)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private async Task<List<ChunkProcessingContext>> SplitTextByHeaderAsync(string source, int level, Stack<KeyValuePair<int, string>> hierarchy, CancellationToken cancellationToken = default, Guid? workerId = null)
+    /// <inheritdoc/>
+    public async Task<List<SummaryChunk>> SplitDocumentForSummaryAsync(string source, int maxTokensPerChunk, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(source)) return new();
 
-        var tokens = (await _tokenCountService.CountAsync(new() { Text = source })).TokenCount;
-        if (tokens < _documentProcessOption.MaxChunkSize)
+        var tokens = (await _tokenCountService.CountAsync(new() { Text = source }, cancellationToken)).TokenCount;
+        if (tokens <= maxTokensPerChunk)
         {
-            var chunk = CreateChunk(source, tokens, TypeChunk.Text, GetHierarchyPath(hierarchy));
-            return new List<ChunkProcessingContext>
+            return new List<SummaryChunk>
             {
-                new ChunkProcessingContext
+                new SummaryChunk { Content = source, HierarchyPath = string.Empty, Title = string.Empty, TokensCount = tokens }
+            };
+        }
+
+        return await SplitSummaryByHeaderAsync(source, 1, new Stack<KeyValuePair<int, string>>(), maxTokensPerChunk, cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public async Task<List<SummaryChunk>> SplitDocumentTopLevelAsync(string source, int maxTokensPerChunk, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(source)) return new();
+
+        var blocks = MarkdownServiceHelper.GetAllBlock(source, _pipeline);
+        var h1Headers = blocks.OfType<HeadingBlock>().Where(h => h.Level == 1).ToList();
+        var targetLevel = h1Headers.Count > 0 ? 1 : 2;
+
+        var headers = targetLevel == 1
+            ? h1Headers
+            : blocks.OfType<HeadingBlock>().Where(h => h.Level == 2).ToList();
+
+        if (headers.Count == 0)
+        {
+            return new List<SummaryChunk>
+            {
+                new SummaryChunk { Content = source, HierarchyPath = string.Empty, Title = string.Empty }
+            };
+        }
+
+        var result = new List<SummaryChunk>();
+        var hierarchy = new Stack<KeyValuePair<int, string>>();
+
+        for (int i = 0; i < headers.Count; i++)
+        {
+            var currentHeader = headers[i];
+            var nextStart = (i + 1 < headers.Count) ? headers[i + 1].Span.Start : source.Length;
+            var headerTitle = source.Substring(currentHeader.Span.Start, currentHeader.Span.Length);
+            var chunkContent = source.Substring(currentHeader.Span.Start, nextStart - currentHeader.Span.Start);
+
+            var subHierarchy = CloneStack(hierarchy);
+            subHierarchy.Push(new KeyValuePair<int, string>(currentHeader.Level, headerTitle));
+            var hierarchyPath = GetHierarchyPath(subHierarchy);
+
+            result.Add(new SummaryChunk
+            {
+                Content = chunkContent,
+                HierarchyPath = hierarchyPath,
+                Title = headerTitle
+            });
+        }
+
+        return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Private — summary splitting helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private async Task<List<SummaryChunk>> SplitSummaryByHeaderAsync(
+        string source,
+        int level,
+        Stack<KeyValuePair<int, string>> hierarchy,
+        int maxTokensPerChunk,
+        CancellationToken cancellationToken)
+    {
+        var tokens = (await _tokenCountService.CountAsync(new() { Text = source }, cancellationToken)).TokenCount;
+        if (tokens <= maxTokensPerChunk)
+        {
+            return new List<SummaryChunk>
+            {
+                new SummaryChunk
                 {
-                    Chunk = chunk,
-                    RawContent = source,
-                    HierarchyStack = CloneStack(hierarchy)
+                    Content = source,
+                    HierarchyPath = GetHierarchyPath(hierarchy),
+                    Title = hierarchy.Count > 0 ? hierarchy.Peek().Value : string.Empty,
+                    TokensCount = tokens
                 }
             };
         }
 
         if (level > _documentProcessOption.MaxHeaderDepth)
         {
-            var summarizedContent = await SummarizeContentAsync(source, cancellationToken, workerId);
-            var chunk = CreateChunk(source, tokens, TypeChunk.Summary, GetHierarchyPath(hierarchy), contentSummary: summarizedContent);
-            return new List<ChunkProcessingContext>
+            return new List<SummaryChunk>
             {
-                new ChunkProcessingContext
+                new SummaryChunk
                 {
-                    Chunk = chunk,
-                    RawContent = source,
-                    HierarchyStack = CloneStack(hierarchy)
+                    Content = source,
+                    HierarchyPath = GetHierarchyPath(hierarchy),
+                    Title = hierarchy.Count > 0 ? hierarchy.Peek().Value : string.Empty,
+                    TokensCount = tokens
                 }
             };
         }
@@ -302,123 +460,29 @@ public class MarkdownService : IMarkdownService
         var blocks = MarkdownServiceHelper.GetAllBlock(source, _pipeline);
         var headers = blocks.OfType<HeadingBlock>().Where(h => h.Level == level).ToList();
 
-        if (!headers.Any()) return await SplitTextByHeaderAsync(source, level + 1, hierarchy, cancellationToken, workerId);
+        if (headers.Count == 0)
+            return await SplitSummaryByHeaderAsync(source, level + 1, hierarchy, maxTokensPerChunk, cancellationToken);
 
-        var result = new List<ChunkProcessingContext>();
-        var lastPos = 0;
+        var result = new List<SummaryChunk>();
 
         for (int i = 0; i < headers.Count; i++)
         {
             var currentHeader = headers[i];
-            var nextHeaderStart = (i + 1 < headers.Count) ? headers[i + 1].Span.Start : source.Length;
-
-            // Content TRƯỚC header hiện tại
-            var subContent = source.Substring(lastPos, currentHeader.Span.Start - lastPos);
-            if (!string.IsNullOrWhiteSpace(subContent))
-                result.AddRange(await SplitTextByHeaderAsync(subContent, level + 1, CloneStack(hierarchy), cancellationToken, workerId));
-
-            // Content CỦA header hiện tại → hết phần của nó
+            var nextStart = (i + 1 < headers.Count) ? headers[i + 1].Span.Start : source.Length;
             var headerTitle = source.Substring(currentHeader.Span.Start, currentHeader.Span.Length);
-            var headerContent = source.Substring(currentHeader.Span.Start, nextHeaderStart - currentHeader.Span.Start);
+            var chunkContent = source.Substring(currentHeader.Span.Start, nextStart - currentHeader.Span.Start);
 
-            UpdateHierarchyStack(hierarchy, new KeyValuePair<int, string>(level, headerTitle));
-            result.AddRange(await SplitTextByHeaderAsync(headerContent, level + 1, CloneStack(hierarchy), cancellationToken, workerId));
-
-            lastPos = nextHeaderStart;
+            var subHierarchy = CloneStack(hierarchy);
+            subHierarchy.Push(new KeyValuePair<int, string>(currentHeader.Level, headerTitle));
+            var subChunks = await SplitSummaryByHeaderAsync(chunkContent, level + 1, subHierarchy, maxTokensPerChunk, cancellationToken);
+            result.AddRange(subChunks);
         }
 
         return result;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Private — table chunk processing (dùng bởi CreateChunkTableAsync)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private async Task<List<ChunkInfo>> GetTableChunksAsync(string source, string hierarchyPath = "", CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(source)) return new();
-
-        var blocks = MarkdownServiceHelper.GetAllBlock(source, _pipeline);
-        var resultChunks = new List<ChunkInfo>();
-        var tableSegments = new List<Block>();
-        string titleTable = string.Empty;
-
-        for (int i = 0; i < blocks.Count; i++)
-        {
-            var block = blocks[i];
-
-            // Chỉ xử lý table block (segment đầu vào không có header)
-            bool isTable = block is Table || (block is HtmlBlock hb && hb.Lines.ToString().TrimStart().StartsWith("<table"));
-            if (!isTable) continue;
-
-            // Lấy title của table (block ngay trước nếu là title block)
-            if (string.IsNullOrEmpty(titleTable) && i > 0 && IsTitleBlock(blocks[i - 1], source))
-                titleTable = source.Substring(blocks[i - 1].Span.Start, blocks[i - 1].Span.Length);
-
-            if (tableSegments.Any())
-            {
-                // Hỏi AI: hai table này có phải là cùng 1 bảng không?
-                var t1 = Extract(source, tableSegments, block);
-                var t2 = source.Substring(block.Span.Start, block.Span.Length);
-                var choice = await _llmService.ChatChoiceAsync(
-                    LlmChatHelper.CreateChatMessageChoice(t1, t2, _systemPrompts.Choice),
-                    new() { "Yes", "No" },
-                    cancellationToken);
-
-                if (choice.Trim().ToLower().StartsWith("y"))
-                {
-                    // Merge vào segment hiện tại
-                    tableSegments.Add(block);
-                }
-                else
-                {
-                    // Chốt segment cũ, bắt đầu segment mới
-                    resultChunks.Add(CreateTableChunk(source, tableSegments, hierarchyPath, titleTable));
-                    tableSegments = new() { block };
-                    titleTable = (i > 0 && IsTitleBlock(blocks[i - 1], source))
-                        ? source.Substring(blocks[i - 1].Span.Start, blocks[i - 1].Span.Length)
-                        : string.Empty;
-                }
-            }
-            else
-            {
-                tableSegments.Add(block);
-            }
-        }
-
-        // Chốt segment cuối
-        if (tableSegments.Any())
-        {
-            resultChunks.Add(CreateTableChunk(source, tableSegments, hierarchyPath, titleTable));
-        }
-
-        // Fallback title: dùng phần cuối của hierarchyPath nếu chunk chưa có title
-        var titleFallback = hierarchyPath.Contains(" --> ")
-            ? hierarchyPath[(hierarchyPath.LastIndexOf(" --> ") + 5)..]
-            : hierarchyPath;
-        foreach (var chunk in resultChunks)
-        {
-            if (string.IsNullOrEmpty(chunk.Title))
-                chunk.Title = titleFallback;
-        }
-
-        return resultChunks;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Private — misc helpers
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private ChunkInfo CreateChunk(string content, int tokens, TypeChunk type, string hierarchy, string title = "", string? contentSummary = null)
-        => new()
-        {
-            Content = content,
-            TokensCount = tokens,
-            Type = type,
-            TittleHirarchy = hierarchy,
-            Title = title,
-            ContentSummary = contentSummary
-        };
+    private Stack<KeyValuePair<int, string>> CloneStack(Stack<KeyValuePair<int, string>> source)
+        => new Stack<KeyValuePair<int, string>>(source.Reverse());
 
     private void UpdateHierarchyStack(Stack<KeyValuePair<int, string>> hierarchy, KeyValuePair<int, string> header)
     {
@@ -451,25 +515,127 @@ public class MarkdownService : IMarkdownService
         return string.Empty;
     }
 
-    private Stack<KeyValuePair<int, string>> CloneStack(Stack<KeyValuePair<int, string>> source)
-        => new Stack<KeyValuePair<int, string>>(source.Reverse());
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Private — chunk splitting (dùng bởi CreateChunkAsync)
+    // ─────────────────────────────────────────────────────────────────────────
 
-    private bool IsTitleBlock(Block b, string src)
+    private async Task<List<ChunkProcessingContext>> SplitTextByHeaderAsync(string source, int level, Stack<KeyValuePair<int, string>> hierarchy, CancellationToken cancellationToken = default, Guid? workerId = null)
     {
-        if (b is not ParagraphBlock) return b is HeadingBlock || b is ListItemBlock || b is ListBlock;
-        var content = src.Substring(b.Span.Start, b.Span.Length);
-        return !content.Contains("page", StringComparison.OrdinalIgnoreCase)
-            && !content.Contains("trang", StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(source)) return new();
+
+        var tokens = (await _tokenCountService.CountAsync(new() { Text = source }, cancellationToken)).TokenCount;
+        if (tokens < _documentProcessOption.MaxChunkSize)
+        {
+            if (IsTrivialContent(source))
+                return new List<ChunkProcessingContext>();
+
+            var chunk = CreateChunk(source, tokens, TypeChunk.Text, GetHierarchyPath(hierarchy));
+            return new List<ChunkProcessingContext>
+            {
+                new ChunkProcessingContext
+                {
+                    Chunk = chunk,
+                    RawContent = source,
+                    HierarchyStack = CloneStack(hierarchy)
+                }
+            };
+        }
+
+        if (level > _documentProcessOption.MaxHeaderDepth)
+        {
+            _logger.LogWarning("Header level too deep: {level}", level);
+            _logger.LogWarning("Tokens: {tokens}", tokens);
+            _logger.LogWarning("Source: {source}", source[..50]);
+            var chunk = CreateChunk(source, tokens, TypeChunk.Summary, GetHierarchyPath(hierarchy));
+            chunk.NeedsSummary = true;
+            return new List<ChunkProcessingContext>
+            {
+                new ChunkProcessingContext
+                {
+                    Chunk = chunk,
+                    RawContent = source,
+                    HierarchyStack = CloneStack(hierarchy)
+                }
+            };
+        }
+
+        var blocks = MarkdownServiceHelper.GetAllBlock(source, _pipeline);
+        var headers = blocks.OfType<HeadingBlock>().Where(h => h.Level == level).ToList();
+
+        if (!headers.Any()) return await SplitTextByHeaderAsync(source, level + 1, hierarchy, cancellationToken, workerId);
+
+        var result = new List<ChunkProcessingContext>();
+        var lastPos = 0;
+        string? pendingHeaders = null;
+
+        for (int i = 0; i < headers.Count; i++)
+        {
+            var currentHeader = headers[i];
+            var nextHeaderStart = (i + 1 < headers.Count) ? headers[i + 1].Span.Start : source.Length;
+
+            var subContent = source.Substring(lastPos, currentHeader.Span.Start - lastPos);
+            if (!string.IsNullOrWhiteSpace(subContent))
+                result.AddRange(await SplitTextByHeaderAsync(subContent, level + 1, CloneStack(hierarchy), cancellationToken, workerId));
+
+            var headerTitle = source.Substring(currentHeader.Span.Start, currentHeader.Span.Length);
+            var headerContent = source.Substring(currentHeader.Span.Start, nextHeaderStart - currentHeader.Span.Start);
+
+            UpdateHierarchyStack(hierarchy, new KeyValuePair<int, string>(level, headerTitle));
+            var headerChunks = await SplitTextByHeaderAsync(headerContent, level + 1, CloneStack(hierarchy), cancellationToken, workerId);
+
+            if (headerChunks.Count == 0)
+            {
+                pendingHeaders = pendingHeaders != null
+                    ? pendingHeaders + "\n" + headerTitle
+                    : headerTitle;
+            }
+            else
+            {
+                if (pendingHeaders != null)
+                {
+                    var merged = pendingHeaders + "\n" + headerChunks[0].RawContent;
+                    headerChunks[0].RawContent = merged;
+                    headerChunks[0].Chunk.Content = merged;
+                    headerChunks[0].Chunk.TokensCount = (await _tokenCountService.CountAsync(new() { Text = merged }, cancellationToken)).TokenCount;
+                    pendingHeaders = null;
+                }
+                result.AddRange(headerChunks);
+            }
+
+            lastPos = nextHeaderStart;
+        }
+
+        if (pendingHeaders != null && result.Count > 0)
+        {
+            var last = result[^1];
+            var merged = pendingHeaders + "\n" + last.RawContent;
+            last.RawContent = merged;
+            last.Chunk.Content = merged;
+            last.Chunk.TokensCount = (await _tokenCountService.CountAsync(new() { Text = merged }, cancellationToken)).TokenCount;
+        }
+
+        return result;
     }
 
-    private string Extract(string src, List<Block> segments, Block table2)
-        => src.Substring(segments[0].Span.Start, table2.Span.End - segments[0].Span.Start + 1);
-
-    private ChunkInfo CreateTableChunk(string src, List<Block> segments, string hierarchy, string title)
+    private bool IsTrivialContent(string source)
     {
-        var content = src.Substring(segments[0].Span.Start, segments.Last().Span.End - segments[0].Span.Start + 1);
-        return CreateChunk(content, 0, TypeChunk.Table, hierarchy, title);
+        if (string.IsNullOrWhiteSpace(source)) return true;
+        var blocks = MarkdownServiceHelper.GetAllBlock(source, _pipeline);
+        return !blocks.Any(b => b is not HeadingBlock
+                             and not HtmlBlock
+                             and not ThematicBreakBlock);
     }
+
+    private ChunkInfo CreateChunk(string content, int tokens, TypeChunk type, string hierarchy, string title = "", string? contentSummary = null)
+        => new()
+        {
+            Content = content,
+            TokensCount = tokens,
+            Type = type,
+            TittleHirarchy = hierarchy,
+            Title = title,
+            ContentSummary = contentSummary
+        };
 
     private async Task<string> SummarizeContentAsync(string content, CancellationToken cancellationToken, Guid? workerId)
     {

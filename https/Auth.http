@@ -1,0 +1,42 @@
+@MarkdownGenQAs_HostAddress = http://localhost:5184
+
+# ==============================================================================
+# AUTHENTICATION
+# ==============================================================================
+
+### 1. Register new user
+POST {{MarkdownGenQAs_HostAddress}}/api/auth/register
+Content-Type: application/json
+Accept: application/json
+
+{
+  "email": "user@example.com",
+  "password": "SecurePassword123!",
+  "fullName": "Test User"
+}
+
+### 2. Login with credentials
+POST {{MarkdownGenQAs_HostAddress}}/api/auth/login
+Content-Type: application/json
+Accept: application/json
+
+{
+  "email": "user@example.com",
+  "password": "SecurePassword123!"
+}
+
+### 3. Initiate OIDC Login
+GET {{MarkdownGenQAs_HostAddress}}/api/auth/login-oidc?returnUrl=/dashboard
+
+### 4. OIDC Callback (handled by middleware)
+GET {{MarkdownGenQAs_HostAddress}}/api/auth/signin-oidc?returnUrl=/dashboard
+
+### 5. Logout
+GET {{MarkdownGenQAs_HostAddress}}/api/auth/logout
+
+### 6. Get Current User Info
+GET {{MarkdownGenQAs_HostAddress}}/api/auth/me
+Accept: application/json
+
+### 7. Signout Callback
+GET {{MarkdownGenQAs_HostAddress}}/api/auth/signout-callback-oidc

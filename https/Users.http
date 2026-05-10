@@ -1,0 +1,50 @@
+@MarkdownGenQAs_HostAddress = http://localhost:5184
+@id = 00000000-0000-0000-0000-000000000000
+@userId = 00000000-0000-0000-0000-000000000000
+@ouId = 00000000-0000-0000-0000-000000000000
+
+# ==============================================================================
+# CURRENT USER PROFILE
+# ==============================================================================
+
+### 1. Get My Profile
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/user/me
+Accept: application/json
+
+### 2. Get My Positions
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/positions
+Accept: application/json
+
+### 3. Get My Managers
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/managers
+Accept: application/json
+
+### 4. Get My OUs
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/user/me/ous
+Accept: application/json
+
+
+# ==============================================================================
+# USER BY ID
+# ==============================================================================
+
+### 5. Get User Managers
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/user/users/{{userId}}/managers
+Accept: application/json
+
+### 6. Get User Positions
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/user/users/{{userId}}/positions
+Accept: application/json
+
+
+# ==============================================================================
+# ORGANIZATION TREE
+# ==============================================================================
+
+### 7. Get My Org Tree
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/user/org/tree
+Accept: application/json
+
+### 8. Get Managers in OU
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/user/org/{{ouId}}/managers
+Accept: application/json

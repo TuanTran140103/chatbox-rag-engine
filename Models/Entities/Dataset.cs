@@ -25,6 +25,9 @@ public class Dataset : BaseEntity, IAuditUser, IAuditDelete
 
     public bool IsPublicToUnit { get; set; }
 
+    public Guid? TemplateMetadataId { get; set; }
+    public TemplateMetadata? TemplateMetadata { get; set; }
+
     public List<DatasetItem>? Items { get; set; }
     public List<AccessShare>? AccessShares { get; set; }
 }

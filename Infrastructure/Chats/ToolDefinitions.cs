@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Markdig;
 using Markdig.Syntax;
@@ -15,6 +16,16 @@ public enum YesNoChoice
 
 public static class ToolDefinitions
 {
+    public static AIFunction GetSubmitMetadataTool() =>
+        AIFunctionFactory.Create(
+            ([Description("The extracted metadata as a JSON string conforming to the schema described in the prompt")] string metadataJson) => { },
+            "SubmitMetadata",
+            "Submits the extracted metadata.");
+
+    private static readonly JsonSerializerOptions LogJsonOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
     public static AIFunction GetSubmitChoiceTool() =>
         AIFunctionFactory.Create(
             ([Description("The selected choice: Yes or No")] YesNoChoice choice) => { },
@@ -38,37 +49,31 @@ public static class ToolDefinitions
         if (logger == null) return;
 
         var msg = response.Messages[0];
-        logger.LogInformation("[{Method}] === RAW RESPONSE ===", method);
-        logger.LogInformation("[{Method}] Message role: {Role}", method, msg.Role);
-        logger.LogInformation("[{Method}] Message text: {Text}", method, msg.Text ?? "(null)");
+        // logger.LogDebug("[{Method}] Message role: {Role}, text: {Text}, contents: {Count}",
+        //     method, msg.Role, msg.Text ?? "(null)", msg.Contents?.Count);
 
         if (msg.Contents != null && msg.Contents.Count > 0)
         {
-            logger.LogInformation("[{Method}] Contents count: {Count}", method, msg.Contents.Count);
             for (int i = 0; i < msg.Contents.Count; i++)
             {
                 var c = msg.Contents[i];
-                logger.LogInformation("[{Method}]   Content[{Idx}] Type: {Type}", method, i, c.GetType().Name);
+                logger.LogDebug("[{Method}]   Content[{Idx}] Type: {Type}", method, i, c.GetType().Name);
 
                 if (c is FunctionCallContent fcc)
                 {
-                    logger.LogInformation("[{Method}]   -> FunctionCall: Name={Name}, CallId={CallId}", method, fcc.Name, fcc.CallId);
+                    logger.LogDebug("[{Method}]   -> FunctionCall: Name={Name}, CallId={CallId}", method, fcc.Name, fcc.CallId);
                     if (fcc.Arguments != null)
                     {
-                        var argsJson = JsonSerializer.Serialize(fcc.Arguments);
-                        logger.LogInformation("[{Method}]   -> Arguments: {Args}", method, argsJson);
+                        var argsJson = JsonSerializer.Serialize(fcc.Arguments, LogJsonOptions);
+                        logger.LogDebug("[{Method}]   -> Arguments: {Args}", method, argsJson);
                     }
                 }
 
                 if (c is FunctionResultContent frc)
                 {
-                    logger.LogInformation("[{Method}]   -> FunctionResult: Name={Name}, CallId={CallId}, Result={Result}", method, frc.CallId, frc.CallId, frc.Result);
+                    logger.LogDebug("[{Method}]   -> FunctionResult: Name={Name}, CallId={CallId}, Result={Result}", method, frc.CallId, frc.CallId, frc.Result);
                 }
             }
-        }
-        else
-        {
-            logger.LogInformation("[{Method}] Contents is null or empty", method);
         }
     }
 
@@ -84,7 +89,7 @@ public static class ToolDefinitions
         {
             if (toolCall.Arguments.TryGetValue("choice", out var choiceObj) && choiceObj != null)
             {
-                logger?.LogInformation("[ParseChoiceFromResponse] Parsed choice from FunctionCallContent: {Choice}", choiceObj);
+                // logger?.LogInformation("[ParseChoiceFromResponse] Parsed choice from FunctionCallContent: {Choice}", choiceObj);
                 return choiceObj.ToString();
             }
         }
@@ -117,15 +122,32 @@ public static class ToolDefinitions
         ILogger? logger = null) where TModel : class
     {
         LogResponse(logger, response, nameof(ParseQaFromResponse));
-
+        // string reasingContent = response.Messages[0].Contents.OfType<TextReasoningContent>().FirstOrDefault()?.Text ?? ""; // <reasoning>
+        
+        // logger?.LogDebug("[ParseQaFromResponse] ReasingContent: {ReasingContent}", reasingContent);
+        
         var toolCall = response.Messages[0].Contents.OfType<FunctionCallContent>().FirstOrDefault(c => c.Name == "SubmitData");
         if (toolCall != null && toolCall.Arguments != null)
         {
             if (toolCall.Arguments.TryGetValue("data", out var dataObj) && dataObj != null)
             {
-                var dataJson = JsonSerializer.Serialize(dataObj);
-                logger?.LogInformation("[ParseQaFromResponse] Parsed data from FunctionCallContent.data: {Json}", dataJson);
-                return JsonSerializer.Deserialize<TModel>(dataJson, jsonOptions);
+                var dataJson = JsonSerializer.Serialize(dataObj, LogJsonOptions);
+                try
+                {
+                    return JsonSerializer.Deserialize<TModel>(dataJson, jsonOptions);
+                }
+                catch (JsonException ex)
+                {
+                    logger?.LogWarning("[ParseQaFromResponse] JSON deserialization failed, returning default: {Message}. Data: {Data}", ex.Message, dataJson);
+                    try
+                    {
+                        return Activator.CreateInstance<TModel>();
+                    }
+                    catch
+                    {
+                        return null;
+                    }
+                }
             }
         }
 
@@ -167,6 +189,26 @@ public static class ToolDefinitions
         }
     }
 
+    public static string? ParseMetadataFromResponse(
+        Microsoft.Extensions.AI.ChatResponse response,
+        ILogger? logger = null)
+    {
+        LogResponse(logger, response, nameof(ParseMetadataFromResponse));
+
+        var toolCall = response.Messages[0].Contents.OfType<FunctionCallContent>().FirstOrDefault(c => c.Name == "SubmitMetadata");
+        if (toolCall != null && toolCall.Arguments != null)
+        {
+            if (toolCall.Arguments.TryGetValue("metadataJson", out var metadataObj) && metadataObj != null)
+            {
+                logger?.LogDebug("[ParseMetadataFromResponse] Parsed metadata from tool call");
+                return metadataObj.ToString();
+            }
+        }
+
+        logger?.LogWarning("[ParseMetadataFromResponse] No FunctionCallContent found, falling back to text");
+        return response.Messages[0].Text;
+    }
+
     public static string? ParseSummaryFromResponse(
         Microsoft.Extensions.AI.ChatResponse response,
         Func<string, string?>? fallbackTransform = null,
@@ -179,7 +221,7 @@ public static class ToolDefinitions
         {
             if (toolCall.Arguments.TryGetValue("summary", out var summaryObj) && summaryObj != null)
             {
-                logger?.LogInformation("[ParseSummaryFromResponse] Parsed summary from FunctionCallContent: {Summary}", summaryObj);
+                // logger?.LogDebug("[ParseSummaryFromResponse] Parsed summary from FunctionCallContent: {Summary}", summaryObj);
                 return summaryObj.ToString();
             }
         }

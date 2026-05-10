@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Hangfire;
 using Hangfire.Server;
+using MarkdownGenQAs.Application.Interfaces.ExternalServices;
 using MarkdownGenQAs.Application.Interfaces.Repository;
 using MarkdownGenQAs.Application.Interfaces.Services;
 using MarkdownGenQAs.Models;
@@ -22,9 +23,13 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
     private readonly IS3Service _s3Service;
     private readonly IProcessBroadcaster _broadcaster;
     private readonly ICacheService _cacheService;
+    private readonly ITokenCountService _tokenCountService;
+    private readonly DocumentService _documentService;
     private readonly DocumentProcessOption _documentProcessOption;
     private readonly List<NotificationMessage> _logMessages = new();
     private readonly object _logLock = new();
+    private int _lastSavedCount = 0;
+    private const int LogSaveInterval = 10;
 
     public GenQaBackgroundJobService(
         ILogger<GenQaBackgroundJobService> logger,
@@ -34,6 +39,8 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
         IS3Service s3Service,
         IProcessBroadcaster broadcaster,
         ICacheService cacheService,
+        ITokenCountService tokenCountService,
+        DocumentService documentService,
         IOptions<DocumentProcessOption> documentProcessOption)
     {
         _logger = logger;
@@ -43,6 +50,8 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
         _s3Service = s3Service;
         _broadcaster = broadcaster;
         _cacheService = cacheService;
+        _tokenCountService = tokenCountService;
+        _documentService = documentService;
         _documentProcessOption = documentProcessOption.Value;
     }
 
@@ -55,6 +64,7 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
         {
             _logMessages.Clear();
         }
+        _lastSavedCount = 0;
 
         try
         {
@@ -75,23 +85,14 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
             document = await InitializeJobStateAsync(documentId, context);
             if (document == null) return;
 
-            var markdownContent = document.OcrContent;
-            if (string.IsNullOrEmpty(markdownContent)) throw new Exception("Markdown content empty");
+            if (string.IsNullOrEmpty(document.OcrContent)) throw new Exception("Markdown content empty");
 
-            var (summary, qaSummary) = await RunPhase1Async(document, markdownContent, cancellationToken);
+            var metadataTask = RunMetadataExtractionAsync(document, cancellationToken);
+            var genQaTask = RunGenQAPipelineAsync(document, cancellationToken);
 
-            var chunks = await RunChunkingAsync(document, markdownContent, cancellationToken);
-
-            var chunkQAInfors = await RunPhase2Async(document, summary, qaSummary, chunks, cancellationToken);
-
-            await RunSaveResultsAsync(document, summary, chunkQAInfors);
+            await Task.WhenAll(metadataTask, genQaTask);
 
             await FinalizeSuccessAsync(document, totalSw);
-        }
-        catch (TaskCanceledException ex)
-        {
-            await HandleJobErrorAsync(documentId, document, ex);
-            throw;
         }
         catch (OperationCanceledException)
         {
@@ -106,6 +107,26 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
         {
             await CleanupConcurrenyAndCacheAsync(documentId, context);
         }
+    }
+
+    private async Task InitializeJobStateForPipelineAsync(Document document, PerformContext? context)
+    {
+        document.Status = StatusDocument.ProcessingGenQa;
+        document.GenQaCount = document.GenQaCount + 1;
+        _uow.Documents.Update(document);
+
+        var documentJob = await _uow.DocumentJobs.GetByDocumentIdAsync(document.Id);
+        if (documentJob != null)
+        {
+            documentJob.StatusGenQa = StatusJob.Processing;
+            if (context != null)
+            {
+                documentJob.GenQaJobId = context.BackgroundJob.Id;
+            }
+            _uow.DocumentJobs.Update(documentJob);
+        }
+
+        await _uow.SaveChangesAsync();
     }
 
     private async Task<Document?> InitializeJobStateAsync(Guid documentId, PerformContext? context)
@@ -157,50 +178,169 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
         }
     }
 
-    private async Task<(string Summary, List<ChunkQA> QASummary)> RunPhase1Async(
+    private async Task RunMetadataExtractionAsync(Document document, CancellationToken ct)
+    {
+        if (document.IsMetadataExtracted && !string.IsNullOrEmpty(document.MetadataContent))
+        {
+            _logger.LogInformation("[METADATA] Using cached metadata for file {Id}", document.Id);
+            await AddLogAndBroadcastAsync(document.Id, $"[METADATA] Using cached metadata for {document.FileName}");
+            return;
+        }
+
+        await _uow.BeginTransactionAsync();
+        try
+        {
+            var documentJob = await _uow.DocumentJobs.GetByDocumentIdAsync(document.Id);
+            if (documentJob != null)
+            {
+                documentJob.StatusMetadata = StatusJob.Processing;
+                _uow.DocumentJobs.Update(documentJob);
+                await _uow.SaveChangesAsync();
+            }
+            await _uow.CommitTransactionAsync();
+        }
+        catch (Exception ex)
+        {
+            await _uow.RollbackTransactionAsync();
+            _logger.LogWarning(ex, "Failed to set StatusMetadata=Processing for document {Id}", document.Id);
+        }
+
+        await AddLogAndBroadcastAsync(document.Id, $"[METADATA] Extracting metadata for: {document.FileName}");
+
+        var sw = Stopwatch.StartNew();
+        var result = await _documentService.ExtractMetadataAsync(document.Id, ct);
+        sw.Stop();
+
+        await _uow.BeginTransactionAsync();
+        try
+        {
+            var documentJob = await _uow.DocumentJobs.GetByDocumentIdAsync(document.Id);
+            if (documentJob != null)
+            {
+                if (result.IsSuccess)
+                {
+                    documentJob.StatusMetadata = StatusJob.Succeeded;
+                    _logger.LogInformation("[METADATA] Metadata extraction completed for file {Id} in {Time:0.00}s", document.Id, sw.Elapsed.TotalSeconds);
+                    await AddLogAndBroadcastAsync(document.Id, $"[METADATA] Metadata extraction completed in {sw.Elapsed.TotalSeconds:0.00}s", processingTime: sw.Elapsed.TotalSeconds);
+                }
+                else
+                {
+                    documentJob.StatusMetadata = StatusJob.Failed;
+                    documentJob.MetadataError = result.ErrorMessage;
+                    document.MetadataError = result.ErrorMessage;
+                    _uow.Documents.Update(document);
+                    _logger.LogWarning("[METADATA] Metadata extraction failed for file {Id}: {Error}", document.Id, result.ErrorMessage);
+                }
+                _uow.DocumentJobs.Update(documentJob);
+                await _uow.SaveChangesAsync();
+            }
+            await _uow.CommitTransactionAsync();
+        }
+        catch (Exception ex)
+        {
+            await _uow.RollbackTransactionAsync();
+            _logger.LogWarning(ex, "Failed to update StatusMetadata for document {Id}", document.Id);
+            return;
+        }
+    }
+
+    private async Task RunGenQAPipelineAsync(Document document, CancellationToken ct)
+    {
+        var markdownContent = document.OcrContent!;
+
+        var summary = await RunPhase1Async(document, markdownContent, ct);
+
+        var chunkingTask = RunChunkingAsync(document, markdownContent, ct);
+        var tableChunkingTask = RunTableChunkingAsync(document, markdownContent, ct);
+
+        await Task.WhenAll(chunkingTask, tableChunkingTask);
+
+        var textChunks = await chunkingTask;
+        var tableChunks = await tableChunkingTask;
+        var allChunks = textChunks.Concat(tableChunks).ToList();
+
+        var phase2Task = RunPhase2Async(document, summary, allChunks, ct);
+        var summaryChunksTask = SummarizeLargeChunksAsync(document, textChunks, ct);
+
+        await Task.WhenAll(phase2Task, summaryChunksTask);
+
+        var chunkQAInfors = await phase2Task;
+
+        await RunSaveResultsAsync(document, summary, chunkQAInfors);
+    }
+
+    private async Task<string> RunPhase1Async(
         Document document,
         string markdownContent,
         CancellationToken ct)
     {
-        string summary = "";
-        List<ChunkQA> qaSummary = new List<ChunkQA>();
+        var summary = await RunSummaryPhaseAsync(document, markdownContent, ct);
 
-        await Task.WhenAll(
-            RunWithConcurrencyAsync(ct, async () =>
-            {
-                // STEP 1a: Summary — skip if already cached in DB
-                if (!string.IsNullOrEmpty(document.SummaryContent))
+        document.SummaryContent = summary;
+        _uow.Documents.Update(document);
+        await _uow.SaveChangesAsync();
+
+        return summary;
+    }
+
+    private async Task<string> RunSummaryPhaseAsync(
+        Document document,
+        string markdownContent,
+        CancellationToken ct)
+    {
+        if (!string.IsNullOrEmpty(document.SummaryContent))
+        {
+            _logger.LogInformation("[STEP 1a] Using cached summary for {FileName}", document.FileName);
+            await AddLogAndBroadcastAsync(document.Id, $"[STEP 1a] Using cached summary for {document.FileName}");
+            return document.SummaryContent;
+        }
+
+        var sw = Stopwatch.StartNew();
+        await AddLogAndBroadcastAsync(document.Id, $"[STEP 1a] Summary generating file: {document.FileName}");
+
+        string summary;
+        var totalTokens = (await _tokenCountService.CountAsync(new() { Text = markdownContent }, ct)).TokenCount;
+        _logger.LogInformation($"[STEP 1a] Total tokens: {totalTokens}");
+
+        if (totalTokens <= _documentProcessOption.SummaryChunkMaxTokens)
+        {
+            summary = await _genQAsService.GenSummaryDocumentAsync(markdownContent, document.FileName, ct);
+        }
+        else
+        {
+            var chunks = await _markdownService.SplitDocumentForSummaryAsync(markdownContent, _documentProcessOption.SummaryChunkMaxTokens, ct);
+            var subSummaries = new string[chunks.Count];
+
+            using var summaryCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var subTasks = chunks.Select((chunk, i) =>
+                RunWithConcurrencyAsync(summaryCts, async t =>
                 {
-                    summary = document.SummaryContent;
-                    _logger.LogInformation("[STEP 1a] ✅ Using cached summary for {FileName}", document.FileName);
-                    await AddLogAndBroadcastAsync(document.Id, $"[STEP 1a] Using cached summary for {document.FileName}");
-                    return;
-                }
+                    var sectionName = string.IsNullOrEmpty(chunk.Title) ? $"{document.FileName}" : $"{document.FileName}[{chunk.Title}]";
+                    subSummaries[i] = await _genQAsService.GenSummaryDocumentAsync(chunk.Content, sectionName, t);
+                })
+            ).ToList();
+            await Task.WhenAll(subTasks);
 
-                var sw = Stopwatch.StartNew();
-                await AddLogAndBroadcastAsync(document.Id, $"[STEP 1a] Summary generating file: {document.FileName}");
-                summary = await _genQAsService.GenSummaryDocumentAsync(markdownContent, document.FileName, ct);
-
-                document.SummaryContent = summary;
-                _uow.Documents.Update(document);
-                await _uow.SaveChangesAsync();
-
-                sw.Stop();
-                _logger.LogInformation("[STEP 1a] ✅ Summary completed in {0:0.00}s", sw.Elapsed.TotalSeconds);
-                await AddLogAndBroadcastAsync(document.Id, $"[STEP 1a] ✅ Summary completed in {sw.Elapsed.TotalSeconds:0.00}s");
-            }),
-            RunWithConcurrencyAsync(ct, async () =>
+            var mergedChunks = new List<SummaryChunk>();
+            for (int i = 0; i < chunks.Count; i++)
             {
-                var sw = Stopwatch.StartNew();
-                await AddLogAndBroadcastAsync(document.Id, $"[STEP 1b] QAs summary generating file: {document.FileName}");
-                qaSummary = await _genQAsService.GenQAsSumaryAsync(markdownContent, document.FileName, ct);
-                sw.Stop();
-                _logger.LogInformation("[STEP 1b] ✅ QAs summary completed in {0:0.00}s", sw.Elapsed.TotalSeconds);
-                await AddLogAndBroadcastAsync(document.Id, $"[STEP 1b] ✅ QAs summary completed in {sw.Elapsed.TotalSeconds:0.00}s ({qaSummary.Count} QAs)");
-            })
-        );
+                mergedChunks.Add(new SummaryChunk
+                {
+                    Content = subSummaries[i],
+                    HierarchyPath = chunks[i].HierarchyPath,
+                    Title = chunks[i].Title
+                });
+            }
 
-        return (summary, qaSummary);
+            summary = await _genQAsService.MergeSummaryChunksAsync(mergedChunks, document.FileName, ct);
+            await AddLogAndBroadcastAsync(document.Id, $"[STEP 1a] Merged summary from {chunks.Count} sections");
+        }
+
+        sw.Stop();
+        _logger.LogInformation("[STEP 1a] Summary completed in {0:0.00}s", sw.Elapsed.TotalSeconds);
+        await AddLogAndBroadcastAsync(document.Id, $"[STEP 1a] Summary completed in {sw.Elapsed.TotalSeconds:0.00}s", processingTime: sw.Elapsed.TotalSeconds);
+
+        return summary;
     }
 
     private async Task<List<ChunkInfo>> RunChunkingAsync(Document document, string markdownContent, CancellationToken ct)
@@ -212,59 +352,122 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
 
         sw.Stop();
 
-        await File.WriteAllTextAsync("chunks_test.json", JsonSerializer.Serialize(chunks));
-
-        _logger.LogInformation("[STEP 2] ✅ Chunking completed in {0:0.00}s - {1} chunks", sw.Elapsed.TotalSeconds, chunks.Count);
-        await AddLogAndBroadcastAsync(document.Id, $"[STEP 2] ✅ Chunking completed in {sw.Elapsed.TotalSeconds:0.00}s ({chunks.Count} chunks)");
+        _logger.LogInformation("[STEP 2] Chunking completed in {0:0.00}s - {1} chunks", sw.Elapsed.TotalSeconds, chunks.Count);
+        await AddLogAndBroadcastAsync(document.Id, $"[STEP 2] Chunking completed in {sw.Elapsed.TotalSeconds:0.00}s ({chunks.Count} chunks)", processingTime: sw.Elapsed.TotalSeconds);
 
         return chunks;
+    }
+
+    private async Task<List<ChunkInfo>> RunTableChunkingAsync(Document document, string markdownContent, CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        await AddLogAndBroadcastAsync(document.Id, $"[TABLE] Creating table chunks for: {document.FileName}");
+
+        var tableChunks = await _markdownService.CreateChunkTableAsync(markdownContent, null, ct);
+
+        sw.Stop();
+
+        _logger.LogInformation("[TABLE] Table chunking completed in {0:0.00}s - {1} table chunks", sw.Elapsed.TotalSeconds, tableChunks.Count);
+        await AddLogAndBroadcastAsync(document.Id, $"[TABLE] Table chunking completed in {sw.Elapsed.TotalSeconds:0.00}s ({tableChunks.Count} table chunks)", processingTime: sw.Elapsed.TotalSeconds);
+
+        return tableChunks;
+    }
+
+    private async Task SummarizeLargeChunksAsync(Document document, List<ChunkInfo> chunks, CancellationToken ct)
+    {
+        var chunksToSummarize = chunks.Where(c => c.NeedsSummary).ToList();
+        if (chunksToSummarize.Count == 0) return;
+
+        await AddLogAndBroadcastAsync(document.Id, $"[CHUNK SUMMARY] Summarizing {chunksToSummarize.Count} large chunks...");
+
+        using var summaryCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var tasks = chunksToSummarize.Select(chunk =>
+            RunWithConcurrencyAsync(summaryCts, async token =>
+            {
+                var chunkName = string.IsNullOrEmpty(chunk.Title) ? "untitled" : chunk.Title;
+                var contentSummary = await _genQAsService.GenSummaryDocumentAsync(chunk.Content, chunkName, token);
+                chunk.ContentSummary = contentSummary;
+            })
+        ).ToList();
+
+        await Task.WhenAll(tasks);
+
+        var summarizedCount = chunksToSummarize.Count(c => !string.IsNullOrEmpty(c.ContentSummary));
+        await AddLogAndBroadcastAsync(document.Id, $"[CHUNK SUMMARY] Done - {summarizedCount}/{chunksToSummarize.Count} chunks summarized");
     }
 
     private async Task<List<ChunkQAInfor>> RunPhase2Async(
         Document document,
         string summary,
-        List<ChunkQA> qaSummary,
-        List<ChunkInfo> chunks,
+        List<ChunkInfo> allChunks,
         CancellationToken ct)
     {
-        await AddLogAndBroadcastAsync(document.Id, $"[STEP 3] QAs for chunks generating file: {document.FileName}");
+        var tableChunks = allChunks.Where(c => c.Type == TypeChunk.Table).ToList();
+        var textCount = allChunks.Count(c => c.Type != TypeChunk.Table);
+        var tableCount = tableChunks.Count;
 
-        var results = new List<ChunkQAInfor>();
-        results.Add(new ChunkQAInfor { ChunkInfo = new ChunkInfo { Type = TypeChunk.Summary, TokensCount = -1, Content = "Content is markdown" }, QAs = qaSummary });
+        await AddLogAndBroadcastAsync(document.Id,
+            $"[STEP 3] QAs for {tableCount} table chunk(s), {textCount} text chunk(s) skipped: {document.FileName}");
 
-        int total = chunks.Sum(c => 1 + c.TableChunks.Count);
-        int completed = 0;
+        var results = new ChunkQAInfor[allChunks.Count];
 
-        var tasks = chunks.Select(chunk =>
-            RunWithConcurrencyAsync(ct, async () =>
-            {
-                var csw = Stopwatch.StartNew();
-                try
+        if (tableCount > 0)
+        {
+            int completed = 0;
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+            var tableTasks = tableChunks.Select(chunk =>
+                RunWithConcurrencyAsync(linkedCts, async token =>
                 {
-                    // Process text/summary chunk
-                    var qas = await _genQAsService.GenQAsTextAsync(chunk, summary, document.FileName, ct);
-                    lock (results) results.Add(new ChunkQAInfor { ChunkInfo = chunk, QAs = qas });
-
-                    // Process nested table chunks within this chunk
-                    foreach (var tableChunk in chunk.TableChunks)
-                    {
-                        var tableQas = await _genQAsService.GenQAsTableAsync(tableChunk, summary, document.FileName, ct);
-                        lock (results) results.Add(new ChunkQAInfor { ChunkInfo = tableChunk, QAs = tableQas });
-                    }
-
-                    ct.ThrowIfCancellationRequested();
-                }
-                finally
-                {
-                    csw.Stop();
+                    var qas = await _genQAsService.GenQAsTableAsync(chunk, summary, document.FileName, token);
                     var done = Interlocked.Increment(ref completed);
-                    await AddLogAndBroadcastAsync(document.Id, $"[STEP 3] Progress: {done}/{total} sub-chunks ({csw.ElapsedMilliseconds}ms)");
-                }
-            })
-        );
+                    var chunkName = string.IsNullOrEmpty(chunk.Title) ? "untitled" : chunk.Title;
 
-        await Task.WhenAll(tasks);
-        return results;
+                    _logger.LogInformation("[STEP 3] documentId: {0} Progress: {1}/{2} - table chunk '{3}'", document.Id, done, tableCount, chunkName);
+                    await AddLogAndBroadcastAsync(document.Id,
+                        $"[STEP 3] Progress: {done}/{tableCount} - table chunk '{chunkName}'");
+
+                    return (chunk, qas);
+                })
+            ).ToList();
+
+            var tableResults = await Task.WhenAll(tableTasks);
+            var qaByChunk = tableResults.ToDictionary(r => r.chunk, r => r.qas);
+
+            for (int i = 0; i < allChunks.Count; i++)
+            {
+                var chunk = allChunks[i];
+                if (chunk.Type == TypeChunk.Table)
+                {
+                    results[i] = new ChunkQAInfor
+                    {
+                        ChunkInfo = chunk,
+                        QAs = qaByChunk.GetValueOrDefault(chunk, new List<ChunkQA>())
+                    };
+                }
+                else
+                {
+                    results[i] = new ChunkQAInfor
+                    {
+                        ChunkInfo = chunk,
+                        QAs = new List<ChunkQA>()
+                    };
+                }
+            }
+        }
+        else
+        {
+            for (int i = 0; i < allChunks.Count; i++)
+            {
+                results[i] = new ChunkQAInfor
+                {
+                    ChunkInfo = allChunks[i],
+                    QAs = new List<ChunkQA>()
+                };
+            }
+        }
+
+        return results.ToList();
     }
 
     private async Task RunSaveResultsAsync(Document document, string summary, List<ChunkQAInfor> results)
@@ -278,16 +481,16 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
         _uow.Documents.Update(document);
         await _uow.SaveChangesAsync();
 
-        _logger.LogInformation("[STEP 4] ✅ Saving completed in {0:0.00}s", sw.Elapsed.TotalSeconds);
+        _logger.LogInformation("[STEP 4] Saving completed in {0:0.00}s", sw.Elapsed.TotalSeconds);
         sw.Stop();
-        await AddLogAndBroadcastAsync(document.Id, $"[STEP 4] ✅ Saving completed in {sw.Elapsed.TotalSeconds:0.00}s");
+        await AddLogAndBroadcastAsync(document.Id, $"[STEP 4] Saving completed in {sw.Elapsed.TotalSeconds:0.00}s", processingTime: sw.Elapsed.TotalSeconds);
     }
 
     private async Task FinalizeSuccessAsync(Document document, Stopwatch sw)
     {
         sw.Stop();
-        await AddLogAndBroadcastAsync(document.Id, $"Processing completed in {sw.Elapsed.TotalSeconds:0.00}s", "Succeeded");
-        _logger.LogInformation("✅ GenQA job SUCCEEDED for file {Id} in {Time}s", document.Id, sw.Elapsed.TotalSeconds);
+        await AddLogAndBroadcastAsync(document.Id, $"Processing completed in {sw.Elapsed.TotalSeconds:0.00}s", "Succeeded", sw.Elapsed.TotalSeconds);
+        _logger.LogInformation("GenQA job SUCCEEDED for file {Id} in {Time}s", document.Id, sw.Elapsed.TotalSeconds);
 
         await _uow.BeginTransactionAsync();
         try
@@ -401,14 +604,16 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
         }
     }
 
-    private async Task AddLogAndBroadcastAsync(Guid documentId, string message, string? status = null)
+    private async Task AddLogAndBroadcastAsync(Guid documentId, string message, string? status = null, double? processingTime = null)
     {
         var notification = new NotificationMessage
         {
             DocumentId = documentId,
             Message = message,
             Status = status ?? StatusDocument.ProcessingGenQa.ToString(),
-            Stage = "GenQA"
+            Stage = "GenQA",
+            Timestamp = DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"),
+            ProcessingTime = processingTime
         };
 
         lock (_logLock)
@@ -417,9 +622,23 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
         }
 
         await _broadcaster.PublishAsync("gen-qa", notification);
+
+        if (message.StartsWith("[STEP 3] Progress:") && processingTime.HasValue)
+        {
+            int currentCount;
+            lock (_logLock)
+            {
+                currentCount = _logMessages.Count;
+            }
+            if (currentCount - _lastSavedCount >= LogSaveInterval)
+            {
+                _lastSavedCount = currentCount;
+                await PersistLogsAsync(documentId);
+            }
+        }
     }
 
-    private async Task UpdateJobLogsAsync(Guid documentId)
+    private async Task PersistLogsAsync(Guid documentId)
     {
         List<LogEvent> logEvents;
         lock (_logLock)
@@ -429,7 +648,8 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
                 TaskId = documentId.ToString(),
                 Status = m.Status,
                 Message = m.Message,
-                Time = m.Timestamp
+                Time = m.Timestamp,
+                ProcessingTime = m.ProcessingTime
             }).ToList();
         }
 
@@ -446,11 +666,50 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
         await _uow.SaveChangesAsync();
     }
 
-    private async Task RunWithConcurrencyAsync(
-        CancellationToken cancellationToken,
-        Func<Task> work)
+    private async Task UpdateJobLogsAsync(Guid documentId)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        await work();
+        await PersistLogsAsync(documentId);
+    }
+
+    private async Task RunWithConcurrencyAsync(
+        CancellationTokenSource linkedCts,
+        Func<CancellationToken, Task> work)
+    {
+        var token = linkedCts.Token;
+        token.ThrowIfCancellationRequested();
+        try
+        {
+            await work(token);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            linkedCts.Cancel();
+            throw;
+        }
+    }
+
+    private async Task<T> RunWithConcurrencyAsync<T>(
+        CancellationTokenSource linkedCts,
+        Func<CancellationToken, Task<T>> work)
+    {
+        var token = linkedCts.Token;
+        token.ThrowIfCancellationRequested();
+        try
+        {
+            return await work(token);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            linkedCts.Cancel();
+            throw;
+        }
     }
 }

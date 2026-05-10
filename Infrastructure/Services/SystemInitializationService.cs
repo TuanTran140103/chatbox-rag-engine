@@ -4,6 +4,7 @@ using MarkdownGenQAs.Models.Constants;
 using MarkdownGenQAs.Models.Entities;
 using MarkdownGenQAs.Models.Enum;
 using MarkdownGenQAs.Options;
+using MarkdownGenQAs.Utils;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -31,17 +32,30 @@ public class SystemInitializationService : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        _logger.LogInformation("🚀 [SystemInitialization] Starting system initialization on app startup...");
+        _logger.LogInformation("[SystemInitialization] Starting system initialization on app startup...");
 
         using (var scope = _serviceProvider.CreateScope())
         {
             try
             {
+                var context = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
+
+                // 0. Ensure database schema exists (for dev - creates all tables if not exist)
+                var canConnect = await context.Database.CanConnectAsync();
+                if (!canConnect)
+                {
+                    _logger.LogError("[SystemInitialization] Cannot connect to database. Please ensure PostgreSQL is running.");
+                    return;
+                }
+
+                await context.Database.EnsureCreatedAsync();
+                _logger.LogInformation("[SystemInitialization] Database schema ensured.");
+
                 // 1. Cleanup Redis
                 var concurrencyService = scope.ServiceProvider.GetRequiredService<IConcurrencyService>();
                 await concurrencyService.ClearAllModelsAsync();
                 await concurrencyService.ClearAllStreamsAsync();
-                _logger.LogInformation("✅ [SystemInitialization] Cleanup successful.");
+                _logger.LogInformation("[SystemInitialization] Cleanup successful.");
 
                 // 2. GenQA Job Recovery - Recover jobs stuck in ProcessingGenQa after app crash
                 try
@@ -64,16 +78,15 @@ public class SystemInitializationService : IHostedService
                 }
 
                 // 3. Seed Data ---> in dev then run once and comment
-                await SeedRolesAsync(scope);
-                var rootOu = await SeedRootOrganizationUnitAsync(scope);
-                await SeedSystemStatisticsAsync(scope);
-                await SeedAdminUserAsync(scope, rootOu);
+                // await SeedRolesAsync(scope);
+                // var rootOu = await SeedRootOrganizationUnitAsync(scope);
+                // await SeedAdminUserAsync(scope, rootOu);
 
-                _logger.LogInformation("✅ [SystemInitialization] System initialization completed successfully.");
+                // _logger.LogInformation("[SystemInitialization] System initialization completed successfully.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ [SystemInitialization] Error during system initialization.");
+                _logger.LogError(ex, "[SystemInitialization] Error during system initialization.");
             }
         }
     }
@@ -115,25 +128,6 @@ public class SystemInitializationService : IHostedService
             await context.SaveChangesAsync();
         }
         return rootOu;
-    }
-
-    private async Task SeedSystemStatisticsAsync(IServiceScope scope)
-    {
-        var context = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
-        
-        var globalStats = await context.SystemStatistics.FirstOrDefaultAsync(s => s.OUId == null);
-        if (globalStats == null)
-        {
-            _logger.LogInformation("Seeding global system statistics...");
-            context.SystemStatistics.Add(new SystemStatistics
-            {
-                OUId = null,
-                TotalDatasets = 0,
-                TotalDocuments = 0,
-                TotalStorageUsage = 0
-            });
-            await context.SaveChangesAsync();
-        }
     }
 
     private async Task SeedAdminUserAsync(IServiceScope scope, OrganizationUnit? rootOu)

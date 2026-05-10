@@ -11,7 +11,7 @@ public class LlmProviderItem
     public float TopP { get; set; } = 1.0f;
     public bool HaveThinking { get; set; } = false;
     public int MaxConcurrency { get; set; } = 10;
-    public int TimeoutSeconds { get; set; } = 300;
+    public int TimeoutSeconds { get; set; } = 600;
 }
 
 public class LlmProviderSettings

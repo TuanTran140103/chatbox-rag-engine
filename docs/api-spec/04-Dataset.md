@@ -71,6 +71,8 @@ GET /api/v1/user/me/datasets?page=1&pageSize=20
       "itemCount": 15,
       "documentCount": 12,
       "isPublicToUnit": true,
+      "templateMetadataId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "templateMetadataName": "Báo cáo template",
       "createdAt": "2025-01-01T00:00:00Z",
       "updatedAt": "2025-06-01T00:00:00Z"
     }
@@ -94,6 +96,8 @@ GET /api/v1/user/me/datasets?page=1&pageSize=20
 | items[].itemCount | int | Tổng số items (folders + documents) |
 | items[].documentCount | int | Số documents trong dataset |
 | items[].isPublicToUnit | bool | Dataset có public cho OU không |
+| items[].templateMetadataId | guid? | Template metadata ID (nếu có) |
+| items[].templateMetadataName | string? | Tên template metadata (nếu có) |
 | items[].createdAt | datetime | Thời gian tạo |
 | items[].updatedAt | datetime | Thời gian cập nhật cuối |
 | page | int | Trang hiện tại |
@@ -129,6 +133,8 @@ GET /api/v1/user/me/datasets/{id:guid}
   "itemCount": 15,
   "documentCount": 12,
   "isPublicToUnit": true,
+  "templateMetadataId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "templateMetadataName": "Báo cáo template",
   "createdAt": "2025-01-01T00:00:00Z",
   "updatedAt": "2025-06-01T00:00:00Z"
 }
@@ -159,7 +165,8 @@ POST /api/v1/user/me/datasets
   "name": "Hợp đồng 2025",
   "description": "Tổng hợp hợp đồng năm 2025",
   "ouId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
-  "isPublicToUnit": false
+  "isPublicToUnit": false,
+  "templateMetadataId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -171,12 +178,14 @@ POST /api/v1/user/me/datasets
 | description | string? | Không | Mô tả (max 1000 ký tự) |
 | ouId | guid? | Không | OU mà dataset thuộc về. Nếu không cung cấp, dataset là personal |
 | isPublicToUnit | bool | Không | Mặc định `false`. Nếu `true`, tất cả member của OU đều có quyền Read |
+| templateMetadataId | guid | Có | Template metadata để định nghĩa schema cho metadata extraction |
 
 ### Validation
 
 - `name` không được rỗng hoặc chỉ whitespace
 - `name` tối đa 255 ký tự
 - Nếu `ouId` được cung cấp, user phải thuộc OU đó (Staff hoặc Manager)
+- `templateMetadataId` là bắt buộc, template phải tồn tại
 - Owner được tự động set = user hiện tại
 
 ### Response (201 Created)
@@ -207,7 +216,8 @@ PUT /api/v1/user/me/datasets/{id:guid}
 {
   "name": "Hợp đồng 2025 - Updated",
   "description": "Mô tả mới",
-  "isPublicToUnit": true
+  "isPublicToUnit": true,
+  "templateMetadataId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
@@ -218,12 +228,12 @@ PUT /api/v1/user/me/datasets/{id:guid}
 | name | string? | Không | Tên mới (nếu cung cấp, không được rỗng, max 255) |
 | description | string? | Không | Mô tả mới (nếu cung cấp, max 1000). Truyền `""` để xoá mô tả |
 | isPublicToUnit | bool? | Không | `true/false` để thay đổi, không gửi field để giữ nguyên |
+| templateMetadataId | guid? | Không | Template metadata. **Chỉ gán được 1 lần** — không thể thay đổi nếu dataset đã có template |
 
 ### Behaviour
 
 - Chỉ cập nhật các field được gửi lên (partial update)
-- `UpdatedAt` tự động cập nhật
-- Audit: `ModifiedBy` được set qua interceptor
+- `templateMetadataId`: nếu dataset **chưa có** template → gán được lần đầu. Nếu **đã có** → báo lỗi, không cho thay đổi
 
 ### Response (200)
 
@@ -241,7 +251,7 @@ Trả về `DatasetDetailDto` (cấu trúc giống GET detail).
 
 ## 5. Delete Dataset
 
-Xoá dataset (soft delete). Chỉ owner, manager của OU, hoặc user được share quyền Delete mới có thể xoá.
+Xoá dataset (soft delete → vào Trash). Chỉ owner, manager của OU, hoặc user được share quyền Delete mới có thể xoá.
 
 ```
 DELETE /api/v1/user/me/datasets/{id:guid}
@@ -249,17 +259,20 @@ DELETE /api/v1/user/me/datasets/{id:guid}
 
 ### Behaviour
 
-**Soft Delete Cascade** — tất cả được thực hiện trong 1 transaction:
+**Non-cascading soft delete (Windows Trash pattern):**
 
-| Entity | Hành vi | Ghi chú |
-|--------|---------|---------|
-| Dataset | `IsDeleted = true` | Query filter toàn cục tự động ẩn |
-| DatasetItem (tất cả items) | `IsDeleted = true` | Bao gồm folders và documents |
-| Document (file gốc) | `IsDeleted = true` | Document được link qua `DatasetItem.DocumentId` |
-| AccessShare (tất cả shares) | `IsDeleted = true` | Mọi quyền share bị thu hồi |
-| S3 files (`ObjectKeyFilePdf`) | **Không xoá** | Soft delete cho phép recovery sau này |
+| Entity | Hành vi |
+|--------|---------|
+| Dataset | `IsDeleted = true` — vào Trash |
+| DatasetItem (tất cả items) | **Không bị ảnh hưởng** — tự động ẩn vì Dataset cha bị deleted |
+| Document (file gốc) | **Không bị ảnh hưởng** — giữ nguyên |
+| AccessShare | **Không bị ảnh hưởng** — giữ nguyên |
+| SystemStatistics | Decrement TotalDatasets (per-OU + global) |
+| S3 files (`ObjectKeyFilePdf`) | **Không xoá** |
 
-**Cơ chế:** `AuditEntityInterceptor` chuyển các lệnh DELETE thành UPDATE, tự động set `IsDeleted=true`, `DeletedAt=UtcNow`, `DeletedBy=currentUserId`.
+> **Khôi phục:** Admin vào Trash → Restore Dataset → tất cả items/documents tự động reappear.
+
+**Cơ chế:** `AuditEntityInterceptor` chuyển lệnh DELETE thành UPDATE, set `IsDeleted=true`, `DeletedAt=UtcNow`, `DeletedBy=currentUserId`.
 
 ### Response (204 No Content)
 
@@ -492,7 +505,7 @@ POST /api/v1/user/me/datasets/{id:guid}/create-item
 
 ## 8. Delete Item (Folder / Document)
 
-Xoá một item trong dataset (folder hoặc document). Yêu cầu quyền Update trên dataset. Folder sẽ xoá mềm tất cả items bên trong.
+Xoá một item trong dataset (soft delete → vào Trash). Yêu cầu quyền Update trên dataset.
 
 ```
 DELETE /api/v1/user/me/datasets/{id:guid}/items/{itemId:guid}
@@ -500,19 +513,17 @@ DELETE /api/v1/user/me/datasets/{id:guid}/items/{itemId:guid}
 
 ### Behaviour
 
+**Non-cascading soft delete (Windows Trash pattern):**
+
 **type=Folder:**
-- Tìm tất cả items con cháu (items có `Path.StartsWith(folder.Path)` và `Id != folderId`)
-- Soft-delete tất cả các Document liên quan (qua interceptor)
-- Soft-delete tất cả DatasetItems con cháu
-- Soft-delete DatasetItem folder cha
+- Chỉ soft-delete folder chính (`IsDeleted = true`)
+- Tất cả con cháu **không bị ảnh hưởng** — tự động ẩn qua Path filter
 
 **type=Document:**
-- Soft-delete Document liên quan (qua interceptor)
-- Soft-delete DatasetItem
+- Chỉ soft-delete DatasetItem (`IsDeleted = true`)
+- Document entity **không bị ảnh hưởng** — ẩn qua DatasetItem link
 
-**Security:**
-- Yêu cầu quyền **Update** trên dataset (Owner, Manager OU, hoặc được share quyền Update)
-- Nếu dataset không tồn tại hoặc không có quyền: trả về **404**
+> **Khôi phục:** Admin vào Trash → Restore → tất cả con cháu tự động reappear.
 
 ### Response (204 No Content)
 
@@ -543,6 +554,6 @@ Không có body.
 
 - **List datasets:** Query qua `GetAccessibleDatasetIdsAsync()` sử dụng index trên `OwnerUserId`, `OUId`, `AccessShares`
 - **Get detail:** Single query với `Include(Owner).Include(OU).Include(Items)`
-- **Items tree:** Query với composite index `(DatasetId, Level)` + `ParentId`
-- **Soft delete:** Transaction ngắn, batch `RemoveRange` — O(n) với số items
+- **Items tree:** Query với composite index `(DatasetId, Level)` + `ParentId`. Thêm subquery filter để loại items dưới folder bị deleted (Path.StartsWith)
+- **Soft delete:** O(1) — chỉ update 1 row, không cascade
 - Tất cả query đều dùng `AsNoTracking()` cho read-only operations

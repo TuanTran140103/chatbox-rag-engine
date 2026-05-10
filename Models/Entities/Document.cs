@@ -41,4 +41,8 @@ public class Document : BaseEntity, IAuditUser, IAuditDelete
     public string? OcrContent { get; set; }
     public string? QaContent { get; set; }
     public string? SummaryContent { get; set; }
+    public string? QaSummaryContent { get; set; }
+    public string? MetadataContent { get; set; }
+    public bool IsMetadataExtracted { get; set; }
+    public string? MetadataError { get; set; }
 }

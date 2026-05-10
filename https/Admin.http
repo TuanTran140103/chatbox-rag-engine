@@ -1,0 +1,141 @@
+@MarkdownGenQAs_HostAddress = http://localhost:5184
+@userId = 00000000-0000-0000-0000-000000000000
+@ouId = 00000000-0000-0000-0000-000000000000
+@datasetId = 00000000-0000-0000-0000-000000000000
+@documentId = 00000000-0000-0000-0000-000000000000
+@parentId = 00000000-0000-0000-0000-000000000000
+
+# ==============================================================================
+# ORGANIZATION & PERSONNEL
+# ==============================================================================
+
+### 1. Create Organization Unit
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/admin/org
+Content-Type: application/json
+Accept: application/json
+
+{
+  "name": "IT Department",
+  "code": "IT",
+  "parentId": null
+}
+
+### 2. Update Organization Unit
+PUT {{MarkdownGenQAs_HostAddress}}/api/v1/admin/org/{{ouId}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "name": "IT Department Updated",
+  "code": "IT"
+}
+
+### 3. Move Organization Unit
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/admin/org/{{ouId}}/move
+Content-Type: application/json
+Accept: application/json
+
+{
+  "newParentId": "00000000-0000-0000-0000-000000000000"
+}
+
+### 4. Delete Organization Unit
+DELETE {{MarkdownGenQAs_HostAddress}}/api/v1/admin/org/{{ouId}}
+
+### 5. Get Organization Tree
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/org/tree
+Accept: application/json
+
+### 6. Get Organization by ID
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/org/{{ouId}}
+Accept: application/json
+
+### 7. Get Users in OU
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/org/{{ouId}}/users
+Accept: application/json
+
+### 8. Get Users in OU and Children
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/org/{{ouId}}/users/tree
+Accept: application/json
+
+### 9. Assign User to OU
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/admin/users/{{userId}}/assign
+Content-Type: application/json
+Accept: application/json
+
+{
+  "ouId": "{{ouId}}",
+  "role": 0,
+  "isPrimary": true,
+  "managerId": null
+}
+
+### 10. Remove User from OU
+DELETE {{MarkdownGenQAs_HostAddress}}/api/v1/admin/users/{{userId}}/ou/{{ouId}}
+
+
+# ==============================================================================
+# DASHBOARD STATISTICS
+# ==============================================================================
+
+### 11. Get Summary Stats
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/stats/summary
+Accept: application/json
+
+### 12. Get Storage Chart
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/stats/storage-chart
+Accept: application/json
+
+### 13. Get Storage Tree
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/stats/storage-tree
+Accept: application/json
+
+### 14. Get Stats by OU
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/stats/ou/{{ouId}}
+Accept: application/json
+
+### 15. Recalculate Stats
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/admin/stats/recalculate
+
+
+# ==============================================================================
+# DATASET MANAGEMENT
+# ==============================================================================
+
+### 16. Get All Datasets (Paginated)
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/datasets?page=1&pageSize=20
+Accept: application/json
+
+### 17. Get Dataset Items
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/datasets/{{datasetId}}/items?parentId={{parentId}}
+Accept: application/json
+
+### 18. Transfer Dataset Ownership
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/admin/datasets/{{datasetId}}/transfer-owner
+Content-Type: application/json
+Accept: application/json
+
+{
+  "newOwnerUserId": "{{userId}}"
+}
+
+### 19. Get Dataset Shares
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/datasets/{{datasetId}}/shares
+Accept: application/json
+
+
+# ==============================================================================
+# USER SEARCH
+# ==============================================================================
+
+### 20. List Users (Cursor pagination)
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/users?pageSize=50
+Accept: application/json
+
+### 21. Get User by ID
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/users/{{userId}}
+Accept: application/json
+
+### 22. Search Users
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/admin/users/search?query=test
+Accept: application/json

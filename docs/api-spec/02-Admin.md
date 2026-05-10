@@ -275,25 +275,26 @@ POST /org/{ouId:guid}/move
 
 ---
 
-### 1.10. Delete OU
+### 1.10. Delete OU (Soft-delete → Trash)
 
-Xoá cứng (hard delete) một OU. **Không cascade xoá con** — thay vào đó reparent children lên root.
+Xoá mềm (soft delete) một OU. OU và tất cả descendants bị ẩn khỏi giao diện, có thể khôi phục từ Trash.
 
 ```
 DELETE /org/{ouId:guid}
 ```
 
-**Cascade Behavior:**
+**Behavior:**
 
-| Đối tượng bị ảnh hưởng | Hành động | Cơ chế |
-|--------------------------|-----------|--------|
-| **OU con trực tiếp** | Reparent lên root (`ParentId = null`, `Level = 0`, `Path` được tính lại cho toàn bộ subtree) | Manual |
-| **UserPosition trong OU** | Xoá cứng khỏi DB | FK Cascade |
-| **Dataset trong OU** | `OUId = null`, `IsPublicToUnit = false` — dataset trở thành standalone | Manual (FK Restrict) |
-| **AccessShare đến OU** | `ShareToOUId = null` — share được giữ lại, chỉ xoá tham chiếu OU | Manual |
-| **SystemStatistics của OU** | Xoá cứng khỏi DB | FK Cascade |
+| Đối tượng | Hành động |
+|-----------|-----------|
+| **OU chính** | `IsDeleted = true` — soft-delete, vào Trash |
+| **OU con** | **Không bị ảnh hưởng** — giữ nguyên `ParentId`, tự động ẩn vì OU cha bị deleted |
+| **Dataset trong OU** | **Không bị ảnh hưởng** — giữ nguyên `OUId`, tự động ẩn qua query filter |
+| **UserPosition** | **Không bị ảnh hưởng** — giữ nguyên |
+| **SystemStatistics** | Đọc row của OU, trừ vào global row, xoá row của OU |
+| **AccessShare đến OU** | **Không bị ảnh hưởng** — giữ nguyên |
 
-> **Ví dụ:** Xoá OU "IT" → "IT-BE" và "IT-FE" (con trực tiếp) trở thành root OU mới, giữ nguyên subtree của chúng. UserPositions trong "IT" bị xoá vĩnh viễn.
+> **Khôi phục:** Vào Trash → Restore OU → tất cả con cháu tự động reappear (vì chưa từng bị mark deleted).
 
 **Response (200):** OK - Xoá thành công.
 
@@ -554,9 +555,150 @@ GET /datasets/{datasetId:guid}/shares
 
 ---
 
+### 4. Trash (Thùng rác)
+
+Base URL: `/api/v1/admin/trash`
+
+Quản lý các item đã soft-delete (thùng rác). Có thể khôi phục hoặc xoá vĩnh viễn.
+
+**Phân quyền (RBAC):**
+
+| Action | organization-unit | dataset / folder / document |
+|--------|-------------------|-----------------------------|
+| View (GET) | Chỉ Admin | User có quyền `Read` trên Dataset (owner, manager, được share) |
+| Restore | Chỉ Admin | User có quyền `Update` trên Dataset |
+| Permanent Delete | Chỉ Admin | User có quyền `Delete` trên Dataset |
+| Empty Trash | Chỉ Admin | — |
+
+---
+
+### 4.1. Get Trash Items
+
+Liệt kê item trong thùng rác mà user có quyền truy cập (chỉ root-level — item cha bị xoá, không bao gồm con cháu).
+
+```
+GET /trash
+```
+
+**Response (200):**
+```json
+[
+  {
+    "id": "guid",
+    "type": "OrganizationUnit",
+    "name": "Phòng IT",
+    "parentInfo": null,
+    "deletedAt": "2025-06-01T00:00:00Z",
+    "deletedBy": "guid"
+  }
+]
+```
+
+**Response Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | guid | ID của item |
+| type | string (enum) | `OrganizationUnit`, `Dataset`, `Folder`, `Document` |
+| name | string | Tên item |
+| parentInfo | string? | Tên OU cha (dataset) hoặc tên dataset (item) |
+| deletedAt | datetime | Thời điểm xoá |
+| deletedBy | guid? | User ID người xoá |
+
+**Behavior:**
+- Chỉ hiển thị item **root-level** (không có ancestor bị deleted) mà user có quyền truy cập
+- **Admin**: thấy tất cả OUs đã xoá + Datasets/Items (toàn hệ thống)
+- **User thường**: chỉ thấy Datasets/Items mà user có quyền `Read` (owner, manager, được share)
+- Ví dụ: Xoá OU "IT" → OU "IT" hiển thị trong trash (admin). Datasets của IT **không hiển thị** (vì OU cha đã deleted). Khi restore OU "IT" → mọi thứ reappear.
+
+---
+
+### 4.2. Restore Item
+
+Khôi phục item từ thùng rác. Tất cả con cháu tự động reappear.
+
+```
+POST /trash/restore/{type}/{id:guid}
+```
+
+**Path Parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| type | string | `"OrganizationUnit"`, `"Dataset"`, `"Folder"`, `"Document"` |
+
+**Behavior:**
+- **OU** (Admin only): Set `IsDeleted = false`, tạo lại SystemStatistics row
+- **Dataset**: Set `IsDeleted = false`, increment SystemStatistics (TotalDatasets). Yêu cầu quyền `Update`.
+- **Item (folder/document)**: Set `IsDeleted = false`. Yêu cầu quyền `Update` trên Dataset cha.
+- Tất cả descendants giữ nguyên dữ liệu (chưa từng bị mark deleted) → tự động visible lại
+
+**Response (200):** OK - Khôi phục thành công.
+
+**Response (400):**
+```json
+{ "error": "Unknown type: xxx" }
+```
+
+**Response (403):**
+```json
+{ "error": "Forbidden" }
+```
+
+---
+
+### 4.3. Permanently Delete Item
+
+Xoá vĩnh viễn một item khỏi hệ thống (không thể khôi phục). Tất cả con cháu cũng bị xoá theo.
+
+```
+DELETE /trash/{type}/{id:guid}
+```
+
+**Path Parameters:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| type | string | `"OrganizationUnit"`, `"Dataset"`, `"Folder"`, `"Document"` |
+
+**Behavior (theo type):**
+
+| Type | Hard-delete | Yêu cầu |
+|------|-------------|---------|
+| `OrganizationUnit` | Tìm tất cả descendant OU (qua Path), xoá toàn bộ Documents → DatasetItems → Datasets → UserPositions → SystemStatistics → OUs | Admin |
+| `Dataset` | Xoá toàn bộ Documents → DatasetItems → AccessShares → Dataset. Update SystemStatistics (decrement). | Quyền `Delete` |
+| `Folder` | Xoá toàn bộ Documents và DatasetItems có Path bắt đầu bằng folder.Path. Update SystemStatistics. | Quyền `Delete` trên Dataset cha |
+| `Document` | Xoá Document + DatasetItem. Update SystemStatistics. | Quyền `Delete` trên Dataset cha |
+
+**Response (200):** OK - Xoá vĩnh viễn.
+
+**Response (403):**
+```json
+{ "error": "Forbidden" }
+```
+
+---
+
+### 4.4. Empty Trash
+
+Xoá vĩnh viễn **tất cả** item trong thùng rác. Chỉ Admin.
+
+```
+DELETE /trash/empty
+```
+
+**Response (200):** OK - Trash emptied.
+
+**Response (403):**
+```json
+{ "error": "Forbidden" }
+```
+
+---
+
 ## Common Error Responses
 
 | Status | Description               |
 |--------|---------------------------|
 | 401    | Unauthorized - Chưa đăng nhập |
-| 403    | Forbidden - Không phải Admin |
+| 403    | Forbidden - Không có quyền (thiếu role hoặc permission) |

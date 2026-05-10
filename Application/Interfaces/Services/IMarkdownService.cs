@@ -14,16 +14,14 @@ public interface IMarkdownService
     Task<List<ChunkInfo>> CreateChunkAsync(string source, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Parse source để lấy content của từng header và tự xây dựng hierarchy.
-    /// Với mỗi content-header, tạo 1 task riêng gọi AI để merge table vào chunk.
-    /// Tất cả task chạy song song (Task.WhenAll) — không cần wrapper concurrency
-    /// vì đây là request chat choice (rất nhanh).
+    /// Tạo table chunks từ toàn bộ source.
+    /// Dùng hybrid heuristic (μ±σ thresholds) + AI fallback (grey zone) để merge continuation tables.
     /// Hoàn toàn độc lập với CreateChunkAsync.
     /// </summary>
     /// <param name="source">Nội dung markdown đầu vào</param>
     /// <param name="parentHierarchy">Hierarchy từ chunk cha (optional)</param>
     /// <param name="cancellationToken"></param>
-    /// <returns>Danh sách chunk table đã được AI merge</returns>
+    /// <returns>Danh sách chunk table đã được merge</returns>
     Task<List<ChunkInfo>> CreateChunkTableAsync(string source, Stack<KeyValuePair<int, string>>? parentHierarchy = null, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -37,4 +35,16 @@ public interface IMarkdownService
     /// <param name="uploadSemaphore">Optional: semaphore to limit concurrent uploads</param>
     /// <returns>Markdown với tất cả images đã được thay thế bằng MinIO public links</returns>
     Task<string> TransformPagesImagesToMinioLinkAsync(string markdownContent, string documentId, List<PageOcrResult> pages, SemaphoreSlim? uploadSemaphore = null);
+
+    /// <summary>
+    /// Split document by headers (H1 → H2 → ...) until each chunk ≤ maxTokensPerChunk.
+    /// Used for processing summaries of very long documents.
+    /// </summary>
+    Task<List<SummaryChunk>> SplitDocumentForSummaryAsync(string source, int maxTokensPerChunk, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Split document only at H1 level (or H2 if no H1 found). Does not recurse deeper.
+    /// Used for step 1b (QA summary) where only top-level splits are needed.
+    /// </summary>
+    Task<List<SummaryChunk>> SplitDocumentTopLevelAsync(string source, int maxTokensPerChunk, CancellationToken cancellationToken = default);
 }

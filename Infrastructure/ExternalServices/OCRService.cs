@@ -47,7 +47,7 @@ public class OCRService : IOCRService
         }
     }
 
-    public async Task<OcrProcessResponse> ProcessAsync(IFormFile file, string modelId = "ChandraOcr")
+    public async Task<OcrProcessResponse> ProcessAsync(IFormFile file, string modelId = "dotsocr")
     {
         using var stream = file.OpenReadStream();
         return await SubmitPdfAsync(stream, file.FileName, modelId);

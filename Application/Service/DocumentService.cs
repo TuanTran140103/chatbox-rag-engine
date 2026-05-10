@@ -1,17 +1,24 @@
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using GenQAServer.Options;
 using Hangfire;
 using MarkdownGenQAs.Application.Dto.Documents;
 using MarkdownGenQAs.Application.Interfaces.ExternalServices;
 using MarkdownGenQAs.Application.Interfaces.Repository;
 using MarkdownGenQAs.Application.Interfaces.Services;
+using MarkdownGenQAs.Helper;
+using MarkdownGenQAs.Infrastructure;
 using MarkdownGenQAs.Infrastructure.Exceptions;
+using MarkdownGenQAs.Infrastructure.Services;
 using MarkdownGenQAs.Models;
 using MarkdownGenQAs.Models.Entities;
 using MarkdownGenQAs.Models.Enum;
 using MarkdownGenQAs.Models.QA;
 using MarkdownGenQAs.Options;
-using MarkdownGenQAs.Helper;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
 
 namespace MarkdownGenQAs.Application.Service;
 
@@ -21,20 +28,37 @@ public class DocumentService
     private readonly IOCRService _ocrService;
     private readonly IS3Service _s3Service;
     private readonly ILogger<DocumentService> _logger;
+    private readonly IProcessBroadcaster _broadcaster;
     private readonly string _defaultOcrModelId;
+    private readonly ApplicationContext _context;
+    private readonly LlmService _llmService;
+    private readonly SystemPrompts _systemPrompts;
+    private readonly DocumentProcessOption _documentProcessOptions;
+    private readonly string _baseDir;
 
     public DocumentService(
         IUnitOfWork uow,
         IOCRService ocrService,
         IS3Service s3Service,
+        IProcessBroadcaster broadcaster,
         ILogger<DocumentService> logger,
-        Microsoft.Extensions.Options.IOptions<ExternalServiceOptions> options)
+        IOptions<ExternalServiceOptions> options,
+        ApplicationContext context,
+        LlmService llmService,
+        IOptions<SystemPrompts> systemPrompts,
+        IOptions<DocumentProcessOption> documentProcessOption)
     {
         _uow = uow;
         _ocrService = ocrService;
         _s3Service = s3Service;
+        _broadcaster = broadcaster;
         _logger = logger;
         _defaultOcrModelId = options.Value.OCRService.DefaultModelId;
+        _context = context;
+        _llmService = llmService;
+        _systemPrompts = systemPrompts.Value;
+        _documentProcessOptions = documentProcessOption.Value;
+        _baseDir = AppContext.BaseDirectory;
     }
 
     public async Task<ServiceResult<DocumentDetailDto>> GetDetailAsync(Guid id)
@@ -59,7 +83,13 @@ public class DocumentService
                 CategoryId = f.DatasetItemId,
                 CategoryName = f.DatasetItem?.Name,
                 CreatedAt = f.CreatedAt,
-                Content = new DocumentContent()
+                Content = new DocumentContent(),
+                Metadata = new DocumentMetadata
+                {
+                    IsMetadataExtracted = f.IsMetadataExtracted,
+                    MetadataContent = f.MetadataContent,
+                    MetadataError = f.MetadataError
+                }
             };
 
             var ocrTask = !string.IsNullOrEmpty(f.OcrContent) ? GetOcrContentAsync(id) : null;
@@ -222,12 +252,15 @@ public class DocumentService
                 var job = await _uow.DocumentJobs.GetByDocumentIdAsync(document.Id);
                 if (job == null)
                 {
-                    job = new DocumentJob { DocumentId = document.Id, OcrJobId = ocrResponse.TaskId };
+                    job = new DocumentJob { DocumentId = document.Id, OcrJobId = ocrResponse.TaskId, StatusOcr = StatusJob.Pending };
                     await _uow.DocumentJobs.AddAsync(job);
                 }
                 else
                 {
                     job.OcrJobId = ocrResponse.TaskId;
+                    job.StatusOcr = StatusJob.Pending;
+                    job.StatusGenQa = StatusJob.None;
+                    job.GenQaJobId = null;
                     _uow.DocumentJobs.Update(job);
                 }
                 await _uow.SaveChangesAsync();
@@ -235,6 +268,9 @@ public class DocumentService
                 document.Status = StatusDocument.ProcessingOcr;
                 _uow.Documents.Update(document);
                 await _uow.SaveChangesAsync();
+
+                // Clear stale SSE messages from previous runs
+                await _broadcaster.ClearHistoryAsync("ocr", document.Id);
 
                 return new ServiceResult<OcrProcessResponse> { IsSuccess = true, Data = ocrResponse };
             }
@@ -290,6 +326,13 @@ public class DocumentService
             if (!string.IsNullOrEmpty(cancelMessage))
             {
                 _logger.LogInformation("Cancel signal sent for OCR Task {TaskId} (Document {DocumentId}): {Message}", job.OcrJobId, documentId, cancelMessage);
+
+                document.Status = StatusDocument.Canceled;
+                _uow.Documents.Update(document);
+                job.StatusOcr = StatusJob.Canceled;
+                _uow.DocumentJobs.Update(job);
+                await _uow.SaveChangesAsync();
+
                 return new ServiceResult<string>
                 {
                     IsSuccess = true,
@@ -335,12 +378,13 @@ public class DocumentService
             var job = await _uow.DocumentJobs.GetByDocumentIdAsync(documentId);
             if (job == null)
             {
-                job = new DocumentJob { DocumentId = document.Id, GenQaJobId = jobId };
+                job = new DocumentJob { DocumentId = document.Id, GenQaJobId = jobId, StatusGenQa = StatusJob.Pending };
                 await _uow.DocumentJobs.AddAsync(job);
             }
             else
             {
                 job.GenQaJobId = jobId;
+                job.StatusGenQa = StatusJob.Pending;
                 _uow.DocumentJobs.Update(job);
             }
 
@@ -374,6 +418,12 @@ public class DocumentService
                 return new ServiceResult<string> { IsSuccess = false, ErrorMessage = $"GenQA job is not running. Current status: {document.Status}" };
 
             BackgroundJob.Delete(job.GenQaJobId);
+
+            document.Status = StatusDocument.Canceled;
+            _uow.Documents.Update(document);
+            job.StatusGenQa = StatusJob.Canceled;
+            _uow.DocumentJobs.Update(job);
+            await _uow.SaveChangesAsync();
 
             _logger.LogInformation("GenQA job {JobId} deleted for Document {DocumentId}", job.GenQaJobId, documentId);
             return new ServiceResult<string>
@@ -440,14 +490,14 @@ public class DocumentService
                         {
                             DocumentId = document.Id,
                             GenQaJobId = newJobId,
-                            StatusGenQa = StatusJob.Pendding
+                            StatusGenQa = StatusJob.Pending
                         };
                         await _uow.DocumentJobs.AddAsync(documentJob);
                     }
                     else
                     {
                         documentJob.GenQaJobId = newJobId;
-                        documentJob.StatusGenQa = StatusJob.Pendding;
+                        documentJob.StatusGenQa = StatusJob.Pending;
                     }
 
                     document.GenQaStartedAt = DateTime.UtcNow;
@@ -490,49 +540,26 @@ public class DocumentService
                     if (originalStream == null) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "Original file not found in storage" };
                     return new ServiceResult<(Stream, string, string)> { IsSuccess = true, Data = (originalStream, "application/pdf", f.FileName) };
 
-                case "qa-json":
-                    if (string.IsNullOrEmpty(f.QaContent)) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "QAs not yet generated" };
-                    var qaBytes = System.Text.Encoding.UTF8.GetBytes(f.QaContent);
-                    Stream jsonStream = new MemoryStream(qaBytes);
-                    return new ServiceResult<(Stream, string, string)> { IsSuccess = true, Data = (jsonStream, "application/json", $"{Path.GetFileNameWithoutExtension(f.FileName)}_QAs.json") };
-
                 case "qa-markdown":
                     if (string.IsNullOrEmpty(f.QaContent)) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "QAs not yet generated" };
 
                     var qaMdResult = await GetQaContentAsync(id);
                     if (!qaMdResult.IsSuccess) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = qaMdResult.ErrorMessage };
 
-                    var chunkQAs = qaMdResult.Data ?? new List<ChunkQAInfor>();
-                    var sb = new StringBuilder();
-                    sb.AppendLine($"# QAs for {f.FileName}");
-                    sb.AppendLine();
-
-                    int qCount = 1;
-                    foreach (var chunk in chunkQAs)
-                    {
-                        if (chunk?.QAs == null) continue;
-
-                        foreach (var qa in chunk.QAs)
-                        {
-                            if (qa == null) continue;
-
-                            sb.AppendLine($"### Question [{qCount}]: {qa.Question}");
-                            sb.AppendLine($"**Answer**: {qa.Answer}");
-                            sb.AppendLine();
-                            qCount++;
-                        }
-                    }
-
-                    var ms = new MemoryStream(Encoding.UTF8.GetBytes(sb.ToString()));
+                    var qaMd = RenderQaToMarkdown(f.FileName, qaMdResult.Data);
+                    var ms = new MemoryStream(Encoding.UTF8.GetBytes(qaMd));
                     return new ServiceResult<(Stream, string, string)> { IsSuccess = true, Data = (ms, "text/markdown", $"{Path.GetFileNameWithoutExtension(f.FileName)}_QAs.md") };
 
-                case "markdown":
-                    if (string.IsNullOrEmpty(f.OcrContent)) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "OCR markdown not found" };
+                case "ocr-markdown":
+                    if (string.IsNullOrEmpty(f.OcrContent)) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "OCR result not found" };
                     Stream mdStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(f.OcrContent));
-                    return new ServiceResult<(Stream, string, string)> { IsSuccess = true, Data = (mdStream, "text/markdown", $"{Path.GetFileNameWithoutExtension(f.FileName)}_OCR.md") };
+                    return new ServiceResult<(Stream, string, string)> { IsSuccess = true, Data = (mdStream, "text/markdown", $"{Path.GetFileNameWithoutExtension(f.FileName)}.md") };
+
+                case "all":
+                    return await DownloadAllAsync(f);
 
                 default:
-                    return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "Invalid scope. Allowed values: original, markdown, qa-markdown, qa-json" };
+                    return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "Invalid scope. Allowed values: original, ocr-markdown, qa-markdown, all" };
             }
         }
         catch (Exception ex)
@@ -540,6 +567,88 @@ public class DocumentService
             _logger.LogError(ex, "Error getting download data for file {Id}, scope {Scope}", id, scope);
             return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "Internal server error" };
         }
+    }
+
+    private async Task<ServiceResult<(Stream Stream, string ContentType, string FileName)>> DownloadAllAsync(Document f)
+    {
+        var baseName = Path.GetFileNameWithoutExtension(f.FileName);
+        var zipStream = new MemoryStream();
+
+        using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Create, true))
+        {
+            if (!string.IsNullOrEmpty(f.ObjectKeyFilePdf))
+            {
+                var originalStream = DocumentHelper.GetContent(f.Id, DocumentHelper.BucketUploads, ".pdf")
+                    ?? await _s3Service.DownloadFileAsync(f.ObjectKeyFilePdf, S3BucketName.OCRUploadPdf);
+
+                if (originalStream != null)
+                {
+                    var entry = archive.CreateEntry(Path.GetFileName(f.FileName), CompressionLevel.Optimal);
+                    await using var entryStream = entry.Open();
+                    await originalStream.CopyToAsync(entryStream);
+                    await originalStream.DisposeAsync();
+                }
+            }
+
+            if (!string.IsNullOrEmpty(f.OcrContent))
+            {
+                    var entry = archive.CreateEntry($"{baseName}.md", CompressionLevel.Optimal);
+                await using var entryStream = entry.Open();
+                await entryStream.WriteAsync(Encoding.UTF8.GetBytes(f.OcrContent));
+            }
+
+            if (!string.IsNullOrEmpty(f.QaContent))
+            {
+                var qaResult = await GetQaContentAsync(f.Id);
+                if (qaResult.IsSuccess && qaResult.Data != null)
+                {
+                    var qaMd = RenderQaToMarkdown(f.FileName, qaResult.Data);
+                    var entry = archive.CreateEntry($"{baseName}_QAs.md", CompressionLevel.Optimal);
+                    await using var entryStream = entry.Open();
+                    await entryStream.WriteAsync(Encoding.UTF8.GetBytes(qaMd));
+                }
+            }
+
+            if (!string.IsNullOrEmpty(f.SummaryContent))
+            {
+                var entry = archive.CreateEntry($"{baseName}_Summary.md", CompressionLevel.Optimal);
+                await using var entryStream = entry.Open();
+                await entryStream.WriteAsync(Encoding.UTF8.GetBytes(f.SummaryContent));
+            }
+        }
+
+        zipStream.Position = 0;
+        return new ServiceResult<(Stream, string, string)> { IsSuccess = true, Data = (zipStream, "application/zip", $"{baseName}_All.zip") };
+    }
+
+    private static string RenderQaToMarkdown(string fileName, List<ChunkQAInfor>? chunkQAs)
+    {
+        if (chunkQAs == null) return string.Empty;
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"# QAs for {fileName}");
+        sb.AppendLine();
+
+        int qCount = 1;
+        foreach (var chunk in chunkQAs)
+        {
+            if (chunk?.QAs != null)
+            {
+                foreach (var qa in chunk.QAs)
+                {
+                    if (qa == null) continue;
+
+                    sb.AppendLine($"### Question [{qCount}]: {qa.Question}");
+                    sb.AppendLine($"**Answer**: {qa.Answer}");
+                    sb.AppendLine();
+                    qCount++;
+                }
+            }
+
+            // Table QAs are now included in the flat QAs list above
+        }
+
+        return sb.ToString();
     }
 
     public async Task<ServiceResult<string>> GetOcrContentAsync(Guid id)
@@ -591,20 +700,100 @@ public class DocumentService
         }
     }
 
-    private DocumentListDto MapToListDto(Document f)
+    public async Task<ServiceResult> ExtractMetadataAsync(Guid documentId, CancellationToken ct = default)
     {
-        return new DocumentListDto
+        var document = await _context.Documents
+#pragma warning disable CS8602
+            .Include(d => d.DatasetItem)
+                .ThenInclude(di => di.Dataset)
+#pragma warning restore CS8602
+            .FirstOrDefaultAsync(d => d.Id == documentId, ct);
+
+        if (document == null)
+            return new ServiceResult { IsSuccess = false, ErrorMessage = "Document not found" };
+
+        var dataset = document.DatasetItem?.Dataset;
+        if (dataset?.TemplateMetadataId == null)
         {
-            Id = f.Id,
-            DocumentName = f.FileName,
-            StatusOcr = f.IsOcred,
-            GenQa = f.IsQaGenerated,
-            StatusDocument = f.Status.ToString(),
-            CategoryName = f.DatasetItem?.Name,
-            OcrCount = f.OcrCount,
-            GenQaCount = f.GenQaCount,
-            CreatedAt = f.CreatedAt,
-            UpdatedAt = f.UpdatedAt
+            _logger.LogInformation("Document {DocumentId} has no template assigned, skipping metadata extraction", documentId);
+            return new ServiceResult { IsSuccess = true };
+        }
+
+        var template = await _context.TemplateMetadatas.FindAsync([dataset.TemplateMetadataId.Value], ct);
+        if (template == null)
+        {
+            _logger.LogWarning("TemplateMetadata {TemplateId} not found for document {DocumentId}", dataset.TemplateMetadataId, documentId);
+            return new ServiceResult { IsSuccess = false, ErrorMessage = "Template metadata not found" };
+        }
+
+        if (string.IsNullOrEmpty(document.OcrContent))
+            return new ServiceResult { IsSuccess = false, ErrorMessage = "OCR content not found" };
+
+        var pages = MarkdownServiceHelper.SplitIntoPages(document.OcrContent);
+        var pageCount = Math.Min(pages.Count, _documentProcessOptions.MaxExtractionPages);
+        var content = string.Join("\n\n---\n\n", pages.Take(pageCount));
+
+        _logger.LogInformation("Extracting metadata for document {DocumentId}: {PageCount} pages",
+            documentId, pageCount);
+
+        var messages = BuildMetadataMessages(
+            template.JsonSchema,
+            content,
+            document.FileName);
+
+        var metadata = await _llmService.ChatMetadataExtractionAsync(messages, template.JsonSchema, ct);
+
+        if (string.IsNullOrEmpty(metadata))
+        {
+            _logger.LogError("Failed to extract metadata for document {DocumentId}: empty response", documentId);
+            return new ServiceResult { IsSuccess = false, ErrorMessage = "Failed to extract metadata: empty response" };
+        }
+
+        document.MetadataContent = metadata;
+        await _context.SaveChangesAsync(ct);
+
+        return new ServiceResult { IsSuccess = true };
+    }
+
+    public async Task<ServiceResult> UpdateMetadataAsync(Guid documentId, string metadataContent, bool isExtracted)
+    {
+        try
+        {
+            var document = await _uow.Documents.GetByIdAsync(documentId);
+            if (document == null)
+                return new ServiceResult { IsSuccess = false, ErrorMessage = "Document not found" };
+
+            document.MetadataContent = metadataContent;
+            if (isExtracted)
+                document.IsMetadataExtracted = true;
+
+            _uow.Documents.Update(document);
+            await _uow.SaveChangesAsync();
+
+            _logger.LogInformation("Metadata for document {DocumentId} updated by user (isExtracted: {IsExtracted})", documentId, isExtracted);
+            return new ServiceResult { IsSuccess = true };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating metadata for document {Id}", documentId);
+            return new ServiceResult { IsSuccess = false, ErrorMessage = "Internal server error" };
+        }
+    }
+
+    private List<ChatMessage> BuildMetadataMessages(
+        string jsonSchema,
+        string content,
+        string fileName)
+    {
+        string path = Path.Combine(_baseDir, _systemPrompts.MetadataExtraction.PathTemplatePrompt);
+        string templatePrompt = File.ReadAllText(path);
+
+        string prompt = string.Format(templatePrompt, fileName, content, "None", jsonSchema);
+
+        return new List<ChatMessage>
+        {
+            new ChatMessage(ChatRole.System, _systemPrompts.MetadataExtraction.SystemPrompt),
+            new ChatMessage(ChatRole.User, prompt)
         };
     }
 

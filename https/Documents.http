@@ -1,0 +1,94 @@
+@MarkdownGenQAs_HostAddress = http://localhost:5184
+@id = 00000000-0000-0000-0000-000000000000
+@documentId = 00000000-0000-0000-0000-000000000000
+
+# ==============================================================================
+# CONTENT RETRIEVAL
+# ==============================================================================
+
+### 1. Get Document Detail (includes OCR/QA/Summary)
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/documents/{{id}}/detail
+Accept: application/json
+
+### 2. Get OCR Content Only
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/documents/{{id}}/content/ocr
+Accept: application/json
+
+### 3. Get QA Content Only
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/documents/{{id}}/content/qa
+Accept: application/json
+
+### 4. Get Summary Content Only
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/documents/{{id}}/content/summary
+Accept: application/json
+
+### 5. Get Processing Logs
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/documents/{{id}}/logs?type=ocr
+Accept: application/json
+
+### 6. Subscribe to Real-time Notifications (SSE)
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/documents/{{id}}/notifications?type=ocr
+Accept: text/event-stream
+
+
+# ==============================================================================
+# UPLOAD
+# ==============================================================================
+
+### 7. Upload PDF/DOCX File
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/documents/upload
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="file"; filename="test.pdf"
+Content-Type: application/pdf
+
+< ./data/tests/test.pdf
+--boundary--
+Content-Disposition: form-data; name="categoryId"
+Content-Type: text/plain
+
+{{id}}
+--boundary--
+
+
+# ==============================================================================
+# OCR OPERATIONS
+# ==============================================================================
+
+### 8. Start OCR Process (default model: chandraocr)
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/documents/ocr/process/{{id}}
+
+### 9. Start OCR Process with custom model
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/documents/ocr/process/{{id}}?modelId=deepseekocr
+
+### 10. Cancel OCR Job
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/documents/ocr/cancel/{{id}}
+
+
+# ==============================================================================
+# GEN-QA OPERATIONS
+# ==============================================================================
+
+### 11. Start GenQA Process
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/documents/gen-qa/process/{{id}}
+
+### 12. Cancel GenQA Process
+POST {{MarkdownGenQAs_HostAddress}}/api/v1/documents/gen-qa/cancel/{{id}}
+
+
+# ==============================================================================
+# DOWNLOAD
+# ==============================================================================
+
+### 13. Download Original File
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/documents/{{id}}/download?scope=original
+
+### 14. Download OCR Markdown
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/documents/{{id}}/download?scope=ocr-markdown
+
+### 15. Download QA Markdown
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/documents/{{id}}/download?scope=qa-markdown
+
+### 16. Download All (zip)
+GET {{MarkdownGenQAs_HostAddress}}/api/v1/documents/{{id}}/download?scope=all
