@@ -1,6 +1,3 @@
-tôi đang có vấn đề như này,hàm này đếm thời gian xử lý genQA của tùng chunk, nhung hiện tại tôi đang dùng lua Script để tính toán slot vì vậy nó thể thể chuẩn được
-thứ 2 là tôi set concu là tận 10, tổng chunk là 25 tinnhs ra có 3 lần gọi mà nó tính tới tận hơn 400s, mà cái này có 1 worker chạy thôi đó, nhiều worker là nó phải chia slot cơ ???
-cái này tôi đang dùng trên server của nvidia, nó chạy rất nhanh rồi đó, trung bình cũng tầm phút hơn là 1 requset genQA, mà tôi thấy từ xử lý cũng không nhanh , mà không phải retry lại lần nào ??
 
 # MarkdownGenQAs - Markdown to QA Generation System
 
