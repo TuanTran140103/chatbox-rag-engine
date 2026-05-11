@@ -14,7 +14,7 @@ JSON Schema:
 Instructions:
 1. Extract metadata from the document content above
 2. The output MUST conform to the JSON Schema provided above
-3. If a field value cannot be found in the content, set it to null
+3. For required fields that cannot be determined, use an empty string ("") as default. For optional fields, you may use null.
 4. If previously extracted metadata exists, merge new findings with existing data
 5. Prioritize more specific/certain information over vague matches
 6. Call the SubmitMetadata tool with the resulting JSON string

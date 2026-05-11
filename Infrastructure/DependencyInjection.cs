@@ -201,6 +201,7 @@ public static class DependencyInjection
         services.AddScoped<GenQAsService>();
         services.AddScoped<IMarkdownService, MarkdownService>();
         services.AddScoped<DocumentService>();
+        services.AddScoped<GenQaPipelineRunner>();
         services.AddScoped<IAccessControlService, AccessControlService>();
         services.AddScoped<AuthService>();
 

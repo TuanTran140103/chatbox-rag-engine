@@ -1,7 +1,9 @@
 using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using GenQAServer.Infrastructure.Chats;
 using GenQAServer.Infrastructure.Factories;
@@ -231,7 +233,7 @@ public class LlmService
             }
             catch (ClientResultException ex) when (ex.Status == 429)
             {
-                _logger.LogWarning("ChatChoiceAsync rate limited (429) on attempt {Attempt}. Waiting 15s.", retryCount + 1);
+                _logger.LogWarning("ChatChoiceAsync rate limited (429) on attempt {Attempt}. Waiting {Seconds}", retryCount + 1, 15 * (retryCount + 1));
                 await Task.Delay(TimeSpan.FromSeconds(15 * (retryCount + 1)), cancellationToken);
             }
             catch (ClientResultException ex) when (ex.Status >= 500)
@@ -316,7 +318,7 @@ public class LlmService
             }
             catch (ClientResultException ex) when (ex.Status == 429)
             {
-                _logger.LogWarning("ChatGenQAsAsync rate limited (429) on attempt {Attempt}. Waiting 15s.", retryCount + 1);
+                _logger.LogWarning("ChatGenQAsAsync rate limited (429) on attempt {Attempt}. Waiting {Seconds}s.", retryCount + 1, 15 * (retryCount + 1));
                 await Task.Delay(TimeSpan.FromSeconds(15 * (retryCount + 1)), cancellationToken);
             }
             catch (ClientResultException ex) when (ex.Status >= 500)
@@ -399,12 +401,18 @@ public class LlmService
                     if (jsonSchema == null)
                         return metadata;
 
-                    var (isValid, errorMessage) = ValidateJsonAgainstSchema(metadata, jsonSchema);
+                    var fixedMetadata = CoerceRequiredNullsToEmpty(metadata, jsonSchema);
+                    var (isValid, errorMessage) = ValidateJsonAgainstSchema(fixedMetadata, jsonSchema);
                     if (isValid)
-                        return metadata;
+                    {
+                        if (fixedMetadata != metadata)
+                            _logger.LogDebug("ChatMetadataExtractionAsync coerced nulls to empty strings for required fields");
+                        return fixedMetadata;
+                    }
 
+                    _logger.LogDebug("ChatMetadataExtractionAsync JsonSchema: {Schema}", jsonSchema);  
                     _logger.LogWarning("ChatMetadataExtractionAsync attempt {Attempt}: Invalid JSON schema: {Error}", retryCount + 1, errorMessage);
-                    messagesRequest.Add(new ChatMessage(ChatRole.Assistant, $"```json\n{metadata}\n```"));
+                    messagesRequest.Add(new ChatMessage(ChatRole.Assistant, $"```json\n{fixedMetadata}\n```"));
                     messagesRequest.Add(new ChatMessage(ChatRole.User, $"Error: The metadata JSON does not conform to the required schema. Errors: {errorMessage}. Please fix these issues and return valid JSON using the SubmitMetadata tool."));
                     continue;
                 }
@@ -445,6 +453,131 @@ public class LlmService
             if (++retryCount > maxRetry)
                 throw new InvalidOperationException("Failed to get metadata extraction response after multiple retries.");
         }
+    }
+
+    private static string CoerceRequiredNullsToEmpty(string json, string jsonSchema)
+    {
+        using var schemaDoc = JsonDocument.Parse(jsonSchema);
+
+        var required = new HashSet<string>();
+        if (schemaDoc.RootElement.TryGetProperty("required", out var req))
+        {
+            foreach (var item in req.EnumerateArray())
+                required.Add(item.GetString()!);
+        }
+
+        if (required.Count == 0) return json;
+
+        var defaults = new Dictionary<string, object?>();
+        if (schemaDoc.RootElement.TryGetProperty("properties", out var props))
+        {
+            foreach (var prop in props.EnumerateObject())
+            {
+                if (!required.Contains(prop.Name)) continue;
+
+                var hasEnum = HasEnumConstraint(prop.Value);
+                if (hasEnum)
+                {
+                    defaults[prop.Name] = "other";
+                }
+                else
+                {
+                    defaults[prop.Name] = GetDefaultForType(prop.Value);
+                }
+            }
+        }
+
+        if (defaults.Count == 0) return json;
+
+        var node = JsonNode.Parse(json);
+        if (node is JsonObject obj)
+        {
+            bool changed = false;
+            foreach (var (field, defaultVal) in defaults)
+            {
+                if (obj.TryGetPropertyValue(field, out var val) && val is null)
+                {
+                    obj[field] = JsonValue.Create(defaultVal);
+                    changed = true;
+                }
+            }
+            if (changed)
+                return node.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        }
+
+        return json;
+    }
+
+    private static bool HasEnumConstraint(JsonElement propValue)
+    {
+        if (propValue.TryGetProperty("enum", out _))
+            return true;
+
+        if (propValue.TryGetProperty("oneOf", out var oneOfEl))
+        {
+            foreach (var branch in oneOfEl.EnumerateArray())
+            {
+                if (branch.TryGetProperty("enum", out _))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static object GetDefaultForType(JsonElement propValue)
+    {
+        var type = ResolveJsonType(propValue);
+        return type switch
+        {
+            "integer" or "number" => 0,
+            "boolean"             => false,
+            "array"               => Array.Empty<object>(),
+            _                     => ""
+        };
+    }
+
+    private static string? ResolveJsonType(JsonElement propValue)
+    {
+        if (propValue.TryGetProperty("type", out var typeEl))
+        {
+            if (typeEl.ValueKind == JsonValueKind.String)
+                return typeEl.GetString();
+
+            if (typeEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var t in typeEl.EnumerateArray())
+                {
+                    var val = t.GetString();
+                    if (val != "null") return val;
+                }
+            }
+        }
+
+        if (propValue.TryGetProperty("oneOf", out var oneOfEl))
+        {
+            foreach (var branch in oneOfEl.EnumerateArray())
+            {
+                var result = ResolveJsonType(branch);
+                if (result != null) return result;
+            }
+        }
+
+        if (propValue.TryGetProperty("format", out var formatEl))
+        {
+            var fmt = formatEl.GetString();
+            if (fmt == "date" || fmt == "date-time" || fmt == "time")
+                return "string";
+        }
+
+        // fallback to keyword hints
+        if (propValue.TryGetProperty("properties", out _))
+            return "object";
+
+        if (propValue.TryGetProperty("items", out _))
+            return "array";
+
+        return null;
     }
 
     private static (bool IsValid, string? ErrorMessage) ValidateJsonAgainstSchema(string json, string jsonSchema)

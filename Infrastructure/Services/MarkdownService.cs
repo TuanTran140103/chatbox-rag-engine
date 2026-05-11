@@ -193,13 +193,18 @@ public class MarkdownService : IMarkdownService
             var firstBlock = tables.First(t => t.index == seg[0].Index).block;
             var lastBlock = tables.First(t => t.index == seg[^1].Index).block;
             var content = source.Substring(firstBlock.Span.Start, lastBlock.Span.End - firstBlock.Span.Start + 1);
+
+            var tableTitle = MarkdownServiceHelper.GetPrecedingTextForTable(source, _pipeline, firstBlock.Span.Start);
+            if (string.IsNullOrWhiteSpace(tableTitle))
+                tableTitle = titleFallback;
+
             return new ChunkInfo
             {
                 Content = content,
                 TokensCount = 0,
                 Type = TypeChunk.Table,
                 TittleHirarchy = hierarchyPath,
-                Title = titleFallback
+                Title = tableTitle
             };
         }).ToList();
 

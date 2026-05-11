@@ -355,6 +355,40 @@ public class MarkdownServiceHelper
             .ToList();
     }
 
+    /// <summary>
+    /// Duyệt ngược từ table lên, skip các block không phải text có nghĩa
+    /// (HtmlBlock, ThematicBreak, List, Code, Table), lấy text từ block
+    /// đầu tiên không bị exclude làm title cho table.
+    /// </summary>
+    public static string GetPrecedingTextForTable(string source, MarkdownPipeline pipeline, int tableBlockStart)
+    {
+        if (tableBlockStart <= 0) return string.Empty;
+
+        var precedingContent = source[..tableBlockStart];
+        if (string.IsNullOrWhiteSpace(precedingContent)) return string.Empty;
+
+        var blocks = GetAllBlock(precedingContent, pipeline);
+
+        for (int i = blocks.Count - 1; i >= 0; i--)
+        {
+            if (blocks[i] is HtmlBlock or
+                ThematicBreakBlock or
+                ListBlock or
+                CodeBlock or
+                Markdig.Extensions.Tables.Table or
+                ParagraphBlock)
+            {
+                continue;
+            }
+
+            var text = GetBlockText(precedingContent, blocks[i]).Trim();
+            if (!string.IsNullOrWhiteSpace(text))
+                return text;
+        }
+
+        return string.Empty;
+    }
+
     // ═════════════════════════════════════════════════════════════════════════
     //  Heuristic decision helpers for table continuation
     // ═════════════════════════════════════════════════════════════════════════
