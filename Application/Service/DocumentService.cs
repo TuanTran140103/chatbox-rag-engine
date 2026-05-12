@@ -11,6 +11,7 @@ using MarkdownGenQAs.Helper;
 using MarkdownGenQAs.Infrastructure;
 using MarkdownGenQAs.Infrastructure.Exceptions;
 using MarkdownGenQAs.Infrastructure.Services;
+using MarkdownGenQAs.Utils;
 using MarkdownGenQAs.Models;
 using MarkdownGenQAs.Models.Entities;
 using MarkdownGenQAs.Models.Enum;
@@ -743,15 +744,21 @@ public class DocumentService
 
         var metadata = await _llmService.ChatMetadataExtractionAsync(messages, template.JsonSchema, ct);
 
-        if (string.IsNullOrEmpty(metadata))
+        document.MetadataContent = metadata;
+
+        var defaultJson = MetadataSchemaHelper.GenerateDefaultJson(template.JsonSchema);
+        if (metadata == defaultJson)
         {
-            _logger.LogError("Failed to extract metadata for document {DocumentId}: empty response", documentId);
-            return new ServiceResult { IsSuccess = false, ErrorMessage = "Failed to extract metadata: empty response" };
+            document.IsMetadataExtracted = false;
+            document.MetadataError = "Trích xuất metadata thất bại sau nhiều lần thử, đã dùng giá trị mặc định.";
+            _logger.LogWarning("ExtractMetadataAsync for document {DocumentId}: using default values (extraction failed)", documentId);
+        }
+        else
+        {
+            document.IsMetadataExtracted = true;
         }
 
-        document.MetadataContent = metadata;
         await _context.SaveChangesAsync(ct);
-
         return new ServiceResult { IsSuccess = true };
     }
 
@@ -759,16 +766,31 @@ public class DocumentService
     {
         try
         {
-            var document = await _uow.Documents.GetByIdAsync(documentId);
+            var document = await _context.Documents
+                .Include(d => d.DatasetItem!)
+                    .ThenInclude(di => di.Dataset!)
+                        .ThenInclude(ds => ds.TemplateMetadata)
+                .FirstOrDefaultAsync(d => d.Id == documentId);
+
             if (document == null)
                 return new ServiceResult { IsSuccess = false, ErrorMessage = "Document not found" };
+
+            var schema = document.DatasetItem?.Dataset?.TemplateMetadata?.JsonSchema;
+            if (schema != null)
+            {
+                var (isValid, errorMessage) = MetadataSchemaHelper.ValidateJsonAgainstSchema(metadataContent, schema);
+                if (!isValid)
+                {
+                    _logger.LogWarning("UpdateMetadataAsync: metadata validation failed for document {DocumentId}: {Error}", documentId, errorMessage);
+                    return new ServiceResult { IsSuccess = false, ErrorMessage = $"Metadata không hợp lệ: {errorMessage}" };
+                }
+            }
 
             document.MetadataContent = metadataContent;
             if (isExtracted)
                 document.IsMetadataExtracted = true;
 
-            _uow.Documents.Update(document);
-            await _uow.SaveChangesAsync();
+            await _context.SaveChangesAsync();
 
             _logger.LogInformation("Metadata for document {DocumentId} updated by user (isExtracted: {IsExtracted})", documentId, isExtracted);
             return new ServiceResult { IsSuccess = true };

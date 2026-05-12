@@ -1,15 +1,13 @@
 using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Collections.Concurrent;
-using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using GenQAServer.Infrastructure.Chats;
 using GenQAServer.Infrastructure.Factories;
 using GenQAServer.Options;
-using Json.Schema;
 using MarkdownGenQAs.Helper;
+using MarkdownGenQAs.Utils;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using Utils;
@@ -401,16 +399,16 @@ public class LlmService
                     if (jsonSchema == null)
                         return metadata;
 
-                    var fixedMetadata = CoerceRequiredNullsToEmpty(metadata, jsonSchema);
-                    var (isValid, errorMessage) = ValidateJsonAgainstSchema(fixedMetadata, jsonSchema);
+                    var (fixedMetadata, patchedSchema) = MetadataSchemaHelper.CoerceRequiredNulls(metadata, jsonSchema);
+                    var (isValid, errorMessage) = MetadataSchemaHelper.ValidateJsonAgainstSchema(fixedMetadata, patchedSchema);
                     if (isValid)
                     {
                         if (fixedMetadata != metadata)
-                            _logger.LogDebug("ChatMetadataExtractionAsync coerced nulls to empty strings for required fields");
+                            _logger.LogDebug("ChatMetadataExtractionAsync coerced null/empty values for required fields");
                         return fixedMetadata;
                     }
 
-                    _logger.LogDebug("ChatMetadataExtractionAsync JsonSchema: {Schema}", jsonSchema);  
+                    _logger.LogDebug("ChatMetadataExtractionAsync JsonSchema: {Schema}", patchedSchema);  
                     _logger.LogWarning("ChatMetadataExtractionAsync attempt {Attempt}: Invalid JSON schema: {Error}", retryCount + 1, errorMessage);
                     messagesRequest.Add(new ChatMessage(ChatRole.Assistant, $"```json\n{fixedMetadata}\n```"));
                     messagesRequest.Add(new ChatMessage(ChatRole.User, $"Error: The metadata JSON does not conform to the required schema. Errors: {errorMessage}. Please fix these issues and return valid JSON using the SubmitMetadata tool."));
@@ -451,182 +449,12 @@ public class LlmService
             }
 
             if (++retryCount > maxRetry)
-                throw new InvalidOperationException("Failed to get metadata extraction response after multiple retries.");
-        }
-    }
-
-    private static string CoerceRequiredNullsToEmpty(string json, string jsonSchema)
-    {
-        using var schemaDoc = JsonDocument.Parse(jsonSchema);
-
-        var required = new HashSet<string>();
-        if (schemaDoc.RootElement.TryGetProperty("required", out var req))
-        {
-            foreach (var item in req.EnumerateArray())
-                required.Add(item.GetString()!);
-        }
-
-        if (required.Count == 0) return json;
-
-        var defaults = new Dictionary<string, object?>();
-        if (schemaDoc.RootElement.TryGetProperty("properties", out var props))
-        {
-            foreach (var prop in props.EnumerateObject())
             {
-                if (!required.Contains(prop.Name)) continue;
-
-                var hasEnum = HasEnumConstraint(prop.Value);
-                if (hasEnum)
-                {
-                    defaults[prop.Name] = "other";
-                }
-                else
-                {
-                    defaults[prop.Name] = GetDefaultForType(prop.Value);
-                }
+                _logger.LogWarning("ChatMetadataExtractionAsync failed after {MaxRetry} attempts. Returning default JSON.", maxRetry);
+                return jsonSchema != null
+                    ? MetadataSchemaHelper.GenerateDefaultJson(jsonSchema)
+                    : string.Empty;
             }
-        }
-
-        if (defaults.Count == 0) return json;
-
-        var node = JsonNode.Parse(json);
-        if (node is JsonObject obj)
-        {
-            bool changed = false;
-            foreach (var (field, defaultVal) in defaults)
-            {
-                if (obj.TryGetPropertyValue(field, out var val) && val is null)
-                {
-                    obj[field] = JsonValue.Create(defaultVal);
-                    changed = true;
-                }
-            }
-            if (changed)
-                return node.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
-        }
-
-        return json;
-    }
-
-    private static bool HasEnumConstraint(JsonElement propValue)
-    {
-        if (propValue.TryGetProperty("enum", out _))
-            return true;
-
-        if (propValue.TryGetProperty("oneOf", out var oneOfEl))
-        {
-            foreach (var branch in oneOfEl.EnumerateArray())
-            {
-                if (branch.TryGetProperty("enum", out _))
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static object GetDefaultForType(JsonElement propValue)
-    {
-        var type = ResolveJsonType(propValue);
-        return type switch
-        {
-            "integer" or "number" => 0,
-            "boolean"             => false,
-            "array"               => Array.Empty<object>(),
-            _                     => ""
-        };
-    }
-
-    private static string? ResolveJsonType(JsonElement propValue)
-    {
-        if (propValue.TryGetProperty("type", out var typeEl))
-        {
-            if (typeEl.ValueKind == JsonValueKind.String)
-                return typeEl.GetString();
-
-            if (typeEl.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var t in typeEl.EnumerateArray())
-                {
-                    var val = t.GetString();
-                    if (val != "null") return val;
-                }
-            }
-        }
-
-        if (propValue.TryGetProperty("oneOf", out var oneOfEl))
-        {
-            foreach (var branch in oneOfEl.EnumerateArray())
-            {
-                var result = ResolveJsonType(branch);
-                if (result != null) return result;
-            }
-        }
-
-        if (propValue.TryGetProperty("format", out var formatEl))
-        {
-            var fmt = formatEl.GetString();
-            if (fmt == "date" || fmt == "date-time" || fmt == "time")
-                return "string";
-        }
-
-        // fallback to keyword hints
-        if (propValue.TryGetProperty("properties", out _))
-            return "object";
-
-        if (propValue.TryGetProperty("items", out _))
-            return "array";
-
-        return null;
-    }
-
-    private static (bool IsValid, string? ErrorMessage) ValidateJsonAgainstSchema(string json, string jsonSchema)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-
-            JsonSchema schema;
-            try
-            {
-                schema = JsonSchema.FromText(jsonSchema);
-            }
-            catch (Exception ex)
-            {
-                return (false, $"Invalid JSON Schema: {ex.Message}");
-            }
-
-            var options = new EvaluationOptions
-            {
-                OutputFormat = OutputFormat.List
-            };
-            var result = schema.Evaluate(doc.RootElement, options);
-
-            if (result.IsValid)
-                return (true, null);
-
-            var errors = new List<string>();
-            CollectErrors(result, errors);
-            return (false, string.Join("; ", errors));
-        }
-        catch (JsonException ex)
-        {
-            return (false, $"Invalid JSON: {ex.Message}");
-        }
-    }
-
-    private static void CollectErrors(EvaluationResults results, List<string> errors)
-    {
-        if (results.Errors is { Count: > 0 })
-        {
-            foreach (var kvp in results.Errors)
-                errors.Add($"[{kvp.Key}] {kvp.Value}");
-        }
-
-        if (results.Details is { Count: > 0 })
-        {
-            foreach (var detail in results.Details)
-                CollectErrors(detail, errors);
         }
     }
 }
