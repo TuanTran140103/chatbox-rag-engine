@@ -26,6 +26,7 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
     public DbSet<UserPosition> UserPositions { get; set; }
     public DbSet<SystemStatistics> SystemStatistics { get; set; }
     public DbSet<TemplateMetadata> TemplateMetadatas { get; set; }
+    public DbSet<ConversationThread> Threads { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -220,6 +221,7 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
 
             entity.Property(e => e.OcrContent).HasColumnType("text");
             entity.Property(e => e.QaContent).HasColumnType("text");
+            entity.Property(e => e.ChunkContent).HasColumnType("text");
             entity.Property(e => e.SummaryContent).HasColumnType("text");
             entity.Property(e => e.QaSummaryContent).HasColumnType("text");
             entity.Property(e => e.MetadataContent).HasColumnType("text");
@@ -271,6 +273,18 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
                 )
                 .HasColumnType("jsonb");
 
+            entity.Property(e => e.LogsIndexing)
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v, jsonOptions),
+                    v => string.IsNullOrEmpty(v) ? new List<LogEvent>() : JsonSerializer.Deserialize<List<LogEvent>>(v, jsonOptions) ?? new List<LogEvent>(),
+                    new ValueComparer<List<LogEvent>>(
+                        (c1, c2) => JsonSerializer.Serialize(c1, jsonOptions) == JsonSerializer.Serialize(c2, jsonOptions),
+                        c => c == null ? 0 : JsonSerializer.Serialize(c, jsonOptions).GetHashCode(),
+                        c => JsonSerializer.Deserialize<List<LogEvent>>(JsonSerializer.Serialize(c, jsonOptions), jsonOptions) ?? new List<LogEvent>()
+                    )
+                )
+                .HasColumnType("jsonb");
+
             entity.HasOne(l => l.Document)
                   .WithOne(o => o.LogMessage)
                   .HasForeignKey<LogMessage>(l => l.DocumentId)
@@ -282,19 +296,19 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
             entity.ToTable("DocumentJobs", t =>
             {
                 t.HasCheckConstraint(
-                    "CK_DocumentJob_OcrBeforeGenQa",
-                    @"""StatusGenQa"" IS NULL
+                    "CK_DocumentJob_OcrBeforeIndexing",
+                    @"""StatusIndexing"" IS NULL
                       OR ""StatusOcr"" = 'Succeeded'
-                      OR ""StatusGenQa"" NOT IN ('Processing', 'Succeeded')");
+                      OR ""StatusIndexing"" NOT IN ('Processing', 'Succeeded')");
             });
 
             entity.HasKey(e => e.Id);
             entity.Property(e => e.OcrJobId).HasMaxLength(255);
             entity.Property(e => e.GenQaJobId).HasMaxLength(255);
+            entity.Property(e => e.IndexingJobId).HasMaxLength(255);
             entity.Property(e => e.StatusOcr).HasConversion<string>();
             entity.Property(e => e.StatusGenQa).HasConversion<string>();
-            entity.Property(e => e.StatusMetadata).HasConversion<string>();
-            entity.Property(e => e.MetadataError).HasColumnType("text");
+            entity.Property(e => e.StatusIndexing).HasConversion<string>();
 
             entity.HasOne(j => j.Document)
                   .WithOne(o => o.DocumentJob)
@@ -324,6 +338,32 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
             entity.Property(e => e.Name).IsRequired().HasMaxLength(255);
             entity.Property(e => e.Description).HasMaxLength(1000);
             entity.Property(e => e.JsonSchema).IsRequired().HasColumnType("text");
+            entity.Property(e => e.IndexKeys)
+                .HasColumnType("jsonb")
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                    v => string.IsNullOrEmpty(v) ? null : JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null),
+                    new ValueComparer<List<string>>(
+                        (c1, c2) => c1 == null && c2 == null || c1 != null && c2 != null && c1.SequenceEqual(c2),
+                        c => c == null ? 0 : c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
+                        c => c == null ? new List<string>() : c.ToList()));
+        });
+
+        modelBuilder.Entity<ConversationThread>(entity =>
+        {
+            entity.ToTable("Threads");
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Title).IsRequired().HasMaxLength(500);
+
+            entity.HasOne(e => e.User)
+                  .WithMany()
+                  .HasForeignKey(e => e.UserId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => e.Title)
+                  .HasMethod("gin")
+                  .HasOperators("gin_trgm_ops");
         });
 
         foreach (var entityType in modelBuilder.Model.GetEntityTypes())

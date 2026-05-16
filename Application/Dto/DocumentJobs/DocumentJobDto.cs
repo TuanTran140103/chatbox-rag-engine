@@ -4,5 +4,5 @@ public record DocumentJobDto
 {
     public Guid DocumentId { get; set; }
     public string? OcrJobId { get; set; }
-    public string? GenQaJobId { get; set; }
+    public string? IndexingJobId { get; set; }
 }

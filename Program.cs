@@ -263,6 +263,7 @@ app.UseSerilogRequestLogging();
 app.UseCors("AllowAll");
 // app.UseHttpsRedirection(); // Disabled for development
 app.UseAuthentication();
+app.UseMiddleware<MarkdownGenQAs.Infrastructure.Middleware.GatewayUserMiddleware>();
 app.UseAuthorization();
 
 app.MapControllers();

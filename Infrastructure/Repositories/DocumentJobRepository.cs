@@ -18,11 +18,11 @@ public class DocumentJobRepository : GenericRepository<DocumentJob>, IDocumentJo
             .FirstOrDefaultAsync(j => j.OcrJobId == ocrJobId);
     }
 
-    public async Task<DocumentJob?> GetByGenQaJobIdAsync(string genQaJobId)
+    public async Task<DocumentJob?> GetByIndexingJobIdAsync(string indexingJobId)
     {
         return await _dbSet
             .Include(j => j.Document)
-            .FirstOrDefaultAsync(j => j.GenQaJobId == genQaJobId);
+            .FirstOrDefaultAsync(j => j.IndexingJobId == indexingJobId);
     }
 
     public async Task<DocumentJob?> GetByDocumentIdAsync(Guid documentId)
@@ -40,7 +40,7 @@ public class DocumentJobRepository : GenericRepository<DocumentJob>, IDocumentJo
         }
         else
         {
-            return await _dbSet.AsNoTracking().Where(j => j.StatusGenQa == status).ToListAsync();
+            return await _dbSet.AsNoTracking().Where(j => j.StatusIndexing == status).ToListAsync();
         }
     }
 }

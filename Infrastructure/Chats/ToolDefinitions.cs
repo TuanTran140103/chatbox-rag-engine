@@ -1,3 +1,4 @@
+using System.ClientModel.Primitives;
 using System.ComponentModel;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -24,8 +25,68 @@ public static class ToolDefinitions
 
     private static readonly JsonSerializerOptions LogJsonOptions = new()
     {
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        WriteIndented = false
     };
+
+    private static object? ReflectValue(object? val, HashSet<object> visited, int depth)
+    {
+        if (val == null || val is string || val.GetType().IsPrimitive || val is decimal || val is DateTime || val is DateTimeOffset) return val;
+        if (depth > 3 || !visited.Add(val)) return null;
+
+        var type = val.GetType();
+        if (type.IsArray || (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>)))
+        {
+            var list = new List<object?>();
+            foreach (var item in (System.Collections.IEnumerable)val)
+            {
+                list.Add(ReflectValue(item, visited, depth + 1));
+            }
+            return list;
+        }
+
+        var dict = new Dictionary<string, object?>();
+        foreach (var prop in type.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+        {
+            if (prop.GetIndexParameters().Length > 0) continue;
+            try { dict[prop.Name] = ReflectValue(prop.GetValue(val), visited, depth + 1); } catch { }
+        }
+        foreach (var field in type.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
+        {
+            try { dict["<field>" + field.Name] = ReflectValue(field.GetValue(val), visited, depth + 1); } catch { }
+        }
+        return dict;
+    }
+
+    private static void LogRawRepresentation(ILogger logger, string method, string prefix, object? raw)
+    {
+        if (raw == null) return;
+        try
+        {
+            var dict = ReflectValue(raw, new HashSet<object>(), 0);
+            var json = JsonSerializer.Serialize(dict, LogJsonOptions);
+            if (json.Length > 64000)
+            {
+                logger.LogDebug("[{Method}] {Prefix}RawRepresentation (reflection, {Len} chars): {Json}",
+                    method, prefix, json.Length, json[..64000]);
+            }
+            else
+            {
+                logger.LogDebug("[{Method}] {Prefix}RawRepresentation (reflection): {Json}", method, prefix, json);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug("[{Method}] {Prefix}RawRepresentation (reflection error): {Msg}", method, prefix, ex.Message);
+            try
+            {
+                var str = raw.ToString();
+                if (!string.IsNullOrEmpty(str))
+                    logger.LogDebug("[{Method}] {Prefix}RawRepresentation (ToString): {Str}", method, prefix, str);
+            }
+            catch { }
+        }
+    }
     public static AIFunction GetSubmitChoiceTool() =>
         AIFunctionFactory.Create(
             ([Description("The selected choice: Yes or No")] YesNoChoice choice) => { },
@@ -48,33 +109,59 @@ public static class ToolDefinitions
     {
         if (logger == null) return;
 
-        var msg = response.Messages[0];
-        // logger.LogDebug("[{Method}] Message role: {Role}, text: {Text}, contents: {Count}",
-        //     method, msg.Role, msg.Text ?? "(null)", msg.Contents?.Count);
+        logger.LogDebug("[{Method}] === {Method} ===", method, method);
+        logger.LogDebug("[{Method}]   ModelId: {ModelId}, FinishReason: {FinishReason}",
+            method, response.ModelId ?? "(null)", response.FinishReason?.ToString() ?? "(null)");
 
-        if (msg.Contents != null && msg.Contents.Count > 0)
+        if (response.Usage != null)
         {
-            for (int i = 0; i < msg.Contents.Count; i++)
+            logger.LogDebug("[{Method}]   Usage: Input={Input}, Output={Output}, Total={Total}",
+                method, response.Usage.InputTokenCount, response.Usage.OutputTokenCount, response.Usage.TotalTokenCount);
+        }
+
+        for (int m = 0; m < response.Messages.Count; m++)
+        {
+            var msg = response.Messages[m];
+            logger.LogDebug("[{Method}]   Message[{MsgIdx}] Role: {Role}, Text: {Text}",
+                method, m, msg.Role, msg.Text ?? "(null)");
+
+            if (msg.Contents != null)
             {
-                var c = msg.Contents[i];
-                logger.LogDebug("[{Method}]   Content[{Idx}] Type: {Type}", method, i, c.GetType().Name);
-
-                if (c is FunctionCallContent fcc)
+                for (int i = 0; i < msg.Contents.Count; i++)
                 {
-                    logger.LogDebug("[{Method}]   -> FunctionCall: Name={Name}, CallId={CallId}", method, fcc.Name, fcc.CallId);
-                    if (fcc.Arguments != null)
+                    var c = msg.Contents[i];
+                    switch (c)
                     {
-                        var argsJson = JsonSerializer.Serialize(fcc.Arguments, LogJsonOptions);
-                        logger.LogDebug("[{Method}]   -> Arguments: {Args}", method, argsJson);
+                        case TextReasoningContent trc:
+                            logger.LogDebug("[{Method}]     Content[{Idx}] **REASONING**: {Text}", method, i, trc.Text ?? "(null)");
+                            break;
+                        case TextContent tc:
+                            logger.LogDebug("[{Method}]     Content[{Idx}] TEXT: {Text}", method, i, tc.Text ?? "(null)");
+                            break;
+                        case FunctionCallContent fcc:
+                            var argsJson = fcc.Arguments != null ? JsonSerializer.Serialize(fcc.Arguments, LogJsonOptions) : "";
+                            logger.LogDebug("[{Method}]     Content[{Idx}] FUNC_CALL: {Name}({Args})", method, i, fcc.Name, argsJson);
+                            break;
+                        case FunctionResultContent frc:
+                            logger.LogDebug("[{Method}]     Content[{Idx}] FUNC_RESULT: {Result}", method, i, frc.Result);
+                            break;
+                        default:
+                            try
+                            {
+                                var json = JsonSerializer.Serialize(c, c.GetType(), LogJsonOptions);
+                                logger.LogDebug("[{Method}]     Content[{Idx}] {Type}: {Json}", method, i, c.GetType().Name, json);
+                            }
+                            catch
+                            {
+                                logger.LogDebug("[{Method}]     Content[{Idx}] {Type}: (serialization failed)", method, i, c.GetType().Name);
+                            }
+                            break;
                     }
-                }
-
-                if (c is FunctionResultContent frc)
-                {
-                    logger.LogDebug("[{Method}]   -> FunctionResult: Name={Name}, CallId={CallId}, Result={Result}", method, frc.CallId, frc.CallId, frc.Result);
                 }
             }
         }
+
+        LogRawRepresentation(logger, method, "  RAW: ", response.RawRepresentation);
     }
 
     public static string? ParseChoiceFromResponse(

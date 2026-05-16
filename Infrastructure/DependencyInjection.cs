@@ -30,6 +30,7 @@ public static class DependencyInjection
     public static void AddOptions(IServiceCollection services, IConfiguration configuration)
     {
         services.Configure<ExternalServiceOptions>(configuration.GetSection(ExternalServiceOptions.SectionName));
+        services.Configure<QdrantOptions>(configuration.GetSection(QdrantOptions.SectionName));
         services.Configure<LlmProviderOptions>(configuration.GetSection(LlmProviderOptions.SectionName));
         services.Configure<HangfireOptions>(configuration.GetSection(HangfireOptions.SectionName));
         services.Configure<DocumentProcessOption>(configuration.GetSection(DocumentProcessOption.NameSection));
@@ -113,6 +114,7 @@ public static class DependencyInjection
     {
         services.AddScoped<NotificationService>();
         services.AddScoped<IGenQaBackgroundJobService, GenQaBackgroundJobService>();
+        services.AddScoped<IDocumentIndexingBackgroundJobService, DocumentIndexingBackgroundJobService>();
 
         return services;
     }
@@ -187,6 +189,26 @@ public static class DependencyInjection
         services.AddHostedService<OcrResultConsumer>();
         services.AddHostedService<SystemInitializationService>();
 
+        // Qdrant
+        services.AddSingleton<IQdrantService, QdrantService>();
+        services.AddSingleton<IEmbeddingService, EmbeddingService>();
+
+        // Embedding Generator
+        services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(sp =>
+        {
+            var externalOptions = sp.GetRequiredService<IOptions<ExternalServiceOptions>>().Value;
+            var options = externalOptions.EmbeddingService;
+            var apiKey = !string.IsNullOrEmpty(options.ApiKey) ? options.ApiKey : "no-key";
+            var openAIClient = new OpenAIClient(
+                new ApiKeyCredential(apiKey),
+                new OpenAIClientOptions
+                {
+                    Endpoint = new Uri(options.BaseUrl),
+                    NetworkTimeout = TimeSpan.FromSeconds(options.TimeoutSeconds)
+                });
+            return openAIClient.GetEmbeddingClient(options.Model).AsIEmbeddingGenerator();
+        });
+
         services.AddSingleton<IProcessBroadcaster, StreamBroadcaster>();
         services.AddSingleton<ICacheService, RedisCacheService>();
         services.AddSingleton<IConcurrencyService, RedisConcurrencyService>();
@@ -218,6 +240,9 @@ public static class DependencyInjection
 
         // Trash
         services.AddScoped<ITrashService, TrashService>();
+
+        // AI Search Service
+        services.AddScoped<ISearchService, SearchService>();
 
         // User Services
         services.AddScoped<UserService>();

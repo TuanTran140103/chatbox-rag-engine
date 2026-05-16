@@ -6,7 +6,7 @@ using MarkdownGenQAs.Application.Dto.Documents;
 using MarkdownGenQAs.Application.Service;
 using MarkdownGenQAs.Models;
 using MarkdownGenQAs.Application.Interfaces.ExternalServices;
-using MarkdownGenQAs.Models.QA;
+
 
 namespace MarkdownGenQAs.Controllers;
 
@@ -65,13 +65,13 @@ public class DocumentController : ControllerBase
     }
 
     /// <summary>
-    /// Get only QAs content
+    /// Get only chunk content (JSON)
     /// </summary>
-    [HttpGet("{id}/content/qa")]
-    public async Task<ActionResult<List<ChunkQAInfor>>> GetQaContent(Guid id)
+    [HttpGet("{id}/content/chunks")]
+    public async Task<ActionResult<string>> GetChunkContent(Guid id)
     {
-        var result = await _documentService.GetQaContentAsync(id);
-        if (!result.IsSuccess) return result.ErrorMessage == "QA content not found" ? NotFound(result.ErrorMessage) : StatusCode(500, result.ErrorMessage);
+        var result = await _documentService.GetChunkContentAsync(id);
+        if (!result.IsSuccess) return result.ErrorMessage == "Chunk content not found" ? NotFound(result.ErrorMessage) : StatusCode(500, result.ErrorMessage);
         return Ok(result.Data);
     }
 
@@ -90,7 +90,7 @@ public class DocumentController : ControllerBase
     /// Get historical processing logs
     /// </summary>
     /// <param name="id">Document Id</param>
-    /// <param name="type">Process type: ocr (default) or gen-qa</param>
+    /// <param name="type">Process type: ocr (default) or indexing</param>
     [HttpGet("{id}/logs")]
     [ProducesResponseType(typeof(IEnumerable<NotificationMessage>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -105,7 +105,7 @@ public class DocumentController : ControllerBase
     /// Subscribe to real-time processing notifications (Server-Sent Events)
     /// </summary>
     /// <param name="id">Document Id</param>
-    /// <param name="type">Process type: ocr (default) or gen-qa</param>
+    /// <param name="type">Process type: ocr (default) or indexing</param>
     [HttpGet("{id}/notifications")]
     [Produces("text/event-stream")]
     public async Task GetNotifications(
@@ -241,18 +241,18 @@ public class DocumentController : ControllerBase
 
     #endregion
 
-    #region GenQA Operations
+    #region Indexing Operations
 
     /// <summary>
-    /// Trigger background QA generation
+    /// Trigger background document indexing (metadata + chunking + summary + Qdrant)
     /// </summary>
-    [HttpPost("gen-qa/process/{id}")]
+    [HttpPost("indexing/process/{id}")]
     [ProducesResponseType(StatusCodes.Status202Accepted)]
-    public async Task<IActionResult> ProcessGenQA(Guid id)
+    public async Task<IActionResult> ProcessIndexing(Guid id)
     {
         try
         {
-            var result = await _documentService.ProcessGenQAs(id);
+            var result = await _documentService.ProcessIndexing(id);
             if (!result.IsSuccess)
             {
                 return BadRequest(result.ErrorMessage);
@@ -261,24 +261,24 @@ public class DocumentController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "GenQA processing error for document {DocumentId}", id);
+            _logger.LogError(ex, "Indexing processing error for document {DocumentId}", id);
             return StatusCode(500, ex.Message);
         }
     }
 
 
     /// <summary>
-    /// Cancel GenQA background job
+    /// Cancel indexing background job
     /// </summary>
-    [HttpPost("gen-qa/cancel/{id}")]
+    [HttpPost("indexing/cancel/{id}")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> CancelGenQA(Guid id)
+    public async Task<IActionResult> CancelIndexing(Guid id)
     {
         try
         {
-            var result = await _documentService.CancelGenQA(id);
+            var result = await _documentService.CancelIndexing(id);
             if (!result.IsSuccess)
             {
                 if (result.ErrorMessage != null && result.ErrorMessage.Contains("not found", StringComparison.OrdinalIgnoreCase))
@@ -289,7 +289,7 @@ public class DocumentController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error canceling GenQA for document {Id}", id);
+            _logger.LogError(ex, "Error canceling indexing for document {Id}", id);
             return StatusCode(500, $"Internal server error: {ex.Message}");
         }
     }
@@ -342,7 +342,7 @@ public class DocumentController : ControllerBase
     /// Consolidated download endpoint
     /// </summary>
     /// <param name="id">File ID</param>
-    /// <param name="scope">Download scope: original, ocr-markdown, qa-markdown, all</param>
+    /// <param name="scope">Download scope: original, ocr-markdown, chunks-markdown, all</param>
     [HttpGet("{id}/download")]
     public async Task<IActionResult> Download(Guid id, [FromQuery] string scope = "original")
     {

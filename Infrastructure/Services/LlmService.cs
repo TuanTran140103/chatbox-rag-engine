@@ -76,6 +76,9 @@ public class LlmService
                 chatOptions.Patch.Set(
                     "$.chat_template_kwargs"u8,
                     """{"enable_thinking":true}"""u8);
+                chatOptions.Patch.Set(
+                    "$.reasoning_split"u8,
+                    """true"""u8);
                 return chatOptions;
             };
 #pragma warning restore SCME0001

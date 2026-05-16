@@ -156,6 +156,7 @@ GET /api/v1/templates/{id:guid}
   "name": "Báo cáo template",
   "description": "Template cho báo cáo tài chính",
   "jsonSchema": "{...}",
+  "indexKeys": ["reportDate", "department"],
   "createdAt": "2025-01-01T00:00:00Z",
   "updatedAt": "2025-06-01T00:00:00Z",
   "createdBy": "3fa85f64-5717-4562-b3fc-2c963f66afa7"
@@ -170,6 +171,7 @@ GET /api/v1/templates/{id:guid}
 | name | string | Tên template |
 | description | string? | Mô tả |
 | jsonSchema | string | JSON Schema định nghĩa cấu trúc metadata |
+| indexKeys | string[]? | Danh sách field name dùng làm index cho Qdrant vector search |
 | createdAt | datetime | Thời gian tạo |
 | updatedAt | datetime | Thời gian cập nhật cuối |
 | createdBy | guid? | ID admin tạo template |
@@ -198,7 +200,8 @@ POST /api/v1/templates
 {
   "name": "Báo cáo template",
   "description": "Template cho báo cáo tài chính",
-  "jsonSchema": "{\"type\":\"object\",\"properties\":{\"field1\":{\"type\":\"string\"}}}"
+  "jsonSchema": "{\"type\":\"object\",\"properties\":{\"field1\":{\"type\":\"string\"}}}",
+  "indexKeys": ["reportDate", "department"]
 }
 ```
 
@@ -209,6 +212,7 @@ POST /api/v1/templates
 | name | string | Có | Tên template (max 255 ký tự) |
 | description | string? | Không | Mô tả (max 1000 ký tự) |
 | jsonSchema | string | Có | JSON Schema (theo draft 2020-12). Dùng để validate metadata content của document thuộc dataset gán template này |
+| indexKeys | string[]? | Không | Danh sách field name trong jsonSchema dùng làm index cho Qdrant vector search |
 
 ### Validation
 
@@ -216,6 +220,7 @@ POST /api/v1/templates
 - `name` tối đa 255 ký tự
 - `description` tối đa 1000 ký tự
 - `jsonSchema` là bắt buộc (không validate cú pháp schema ở API layer — lỗi schema sẽ được phát hiện khi dùng)
+- Nếu `indexKeys` có giá trị, tất cả phần tử phải tồn tại trong `jsonSchema.properties`
 - Chỉ Admin mới được tạo
 
 ### Response (201 Created)
@@ -246,7 +251,8 @@ PUT /api/v1/templates/{id:guid}
 {
   "name": "Báo cáo template v2",
   "description": "Mô tả cập nhật",
-  "jsonSchema": "{\"type\":\"object\",\"properties\":{\"field1\":{\"type\":\"string\"},\"field2\":{\"type\":\"integer\"}}}"
+  "jsonSchema": "{\"type\":\"object\",\"properties\":{\"field1\":{\"type\":\"string\"},\"field2\":{\"type\":\"integer\"}}}",
+  "indexKeys": ["reportDate"]
 }
 ```
 
@@ -257,6 +263,7 @@ PUT /api/v1/templates/{id:guid}
 | name | string? | Không | Tên mới (nếu cung cấp, không được rỗng, max 255) |
 | description | string? | Không | Mô tả mới (nếu cung cấp, max 1000). Truyền `""` để xoá mô tả |
 | jsonSchema | string? | Không | JSON Schema mới |
+| indexKeys | string[]? | Không | Danh sách field name dùng làm index. Truyền `[]` để xoá hết |
 
 ### Validation
 

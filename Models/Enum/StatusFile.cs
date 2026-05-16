@@ -7,6 +7,7 @@ public enum StatusDocument
     Successed,
     ProcessingOcr,
     ProcessingGenQa,
+    ProcessingIndexing,
     ProcessingMetadata,
     Canceled
 }

@@ -75,11 +75,9 @@ public class DocumentService
                 FileName = f.FileName,
                 Status = f.Status.ToString(),
                 ProcessingTimeOcr = f.ProcessingTimeOcr,
-                ProcessingTimeGenQa = f.ProcessingTimeGenQa,
                 IsOcred = f.IsOcred,
-                IsQaGenerated = f.IsQaGenerated,
+                IsIndexed = f.IsIndexed,
                 OcrCount = f.OcrCount,
-                GenQaCount = f.GenQaCount,
                 UserId = f.UserId,
                 CategoryId = f.DatasetItemId,
                 CategoryName = f.DatasetItem?.Name,
@@ -94,12 +92,10 @@ public class DocumentService
             };
 
             var ocrTask = !string.IsNullOrEmpty(f.OcrContent) ? GetOcrContentAsync(id) : null;
-            var qaTask = !string.IsNullOrEmpty(f.QaContent) ? GetQaContentAsync(id) : null;
             var summaryTask = !string.IsNullOrEmpty(f.SummaryContent) ? GetSummaryContentAsync(id) : null;
 
             var allTasks = new List<Task>();
             if (ocrTask != null) allTasks.Add(ocrTask);
-            if (qaTask != null) allTasks.Add(qaTask);
             if (summaryTask != null) allTasks.Add(summaryTask);
 
             if (allTasks.Any())
@@ -110,9 +106,6 @@ public class DocumentService
                 {
                     detailDto.Content.OcrMarkdown = ocrTask.Result.Data;
                 }
-
-                if (qaTask != null && qaTask.Status == TaskStatus.RanToCompletion && qaTask.Result.IsSuccess)
-                    detailDto.Content.QAs = qaTask.Result.Data;
 
                 if (summaryTask != null && summaryTask.Status == TaskStatus.RanToCompletion && summaryTask.Result.IsSuccess)
                     detailDto.Content.Summary = summaryTask.Result.Data;
@@ -134,29 +127,20 @@ public class DocumentService
             if (dto.FileStream == null)
                 return new ServiceResult<DocumentUploadResponseDto> { IsSuccess = false, ErrorMessage = "File stream is required" };
 
+            if (!dto.FileStream.CanSeek)
+            {
+                var buffered = new MemoryStream();
+                await dto.FileStream.CopyToAsync(buffered);
+                buffered.Position = 0;
+                dto.FileStream = buffered;
+            }
+
             var extension = Path.GetExtension(dto.FileName).ToLowerInvariant();
             if (extension != ".pdf") return new ServiceResult<DocumentUploadResponseDto> { IsSuccess = false, ErrorMessage = "Only PDF files are supported" };
 
-            var buffer = new byte[4];
-            long currentPosition = 0;
-
-            if (dto.FileStream.CanSeek)
-            {
-                currentPosition = dto.FileStream.Position;
-                await dto.FileStream.ReadExactlyAsync(buffer, 0, 4);
-                dto.FileStream.Position = currentPosition;
-            }
-            else
-            {
-                await dto.FileStream.ReadExactlyAsync(buffer, 0, 4);
-            }
-
-            var signature = Encoding.ASCII.GetString(buffer);
-            if (signature != "%PDF")
-            {
-                _logger.LogWarning("Security Warning: File {FileName} has .pdf extension but invalid signature: {Signature}", dto.FileName, signature);
-                return new ServiceResult<DocumentUploadResponseDto> { IsSuccess = false, ErrorMessage = "Invalid PDF file content." };
-            }
+            var (isValid, errorMessage) = await ValidateFileUtil.ValidatePdfAsync(dto.FileStream, dto.FileName);
+            if (!isValid)
+                return new ServiceResult<DocumentUploadResponseDto> { IsSuccess = false, ErrorMessage = errorMessage };
 
             var existingFile = (await _uow.Documents.FindAsync(f => f.FileName == dto.FileName)).FirstOrDefault();
             if (existingFile != null)
@@ -260,8 +244,8 @@ public class DocumentService
                 {
                     job.OcrJobId = ocrResponse.TaskId;
                     job.StatusOcr = StatusJob.Pending;
-                    job.StatusGenQa = StatusJob.None;
-                    job.GenQaJobId = null;
+                    job.StatusIndexing = StatusJob.None;
+                    job.IndexingJobId = null;
                     _uow.DocumentJobs.Update(job);
                 }
                 await _uow.SaveChangesAsync();
@@ -353,7 +337,7 @@ public class DocumentService
         }
     }
 
-    public async Task<ServiceResult<Guid>> ProcessGenQAs(Guid documentId)
+    public async Task<ServiceResult<Guid>> ProcessIndexing(Guid documentId)
     {
         try
         {
@@ -365,32 +349,32 @@ public class DocumentService
                 return new ServiceResult<Guid>
                 {
                     IsSuccess = false,
-                    ErrorMessage = $"OCR must be completed before GenQA. Current status: {document.Status}"
+                    ErrorMessage = $"OCR must be completed before indexing. Current status: {document.Status}"
                 };
 
             if (string.IsNullOrEmpty(document.OcrContent))
-                return new ServiceResult<Guid> { IsSuccess = false, ErrorMessage = "OCR content not found. Cannot start GenQA until OCR is completed." };
+                return new ServiceResult<Guid> { IsSuccess = false, ErrorMessage = "OCR content not found. Cannot start indexing until OCR is completed." };
 
-            if (document.Status == StatusDocument.ProcessingGenQa)
-                return new ServiceResult<Guid> { IsSuccess = false, ErrorMessage = "GenQA is already processing" };
+            if (document.Status == StatusDocument.ProcessingIndexing)
+                return new ServiceResult<Guid> { IsSuccess = false, ErrorMessage = "Indexing is already processing" };
 
-            var jobId = BackgroundJob.Enqueue<IGenQaBackgroundJobService>(x => x.ProcessGenChunkQA(documentId, CancellationToken.None, null));
+            var jobId = BackgroundJob.Enqueue<IDocumentIndexingBackgroundJobService>(x => x.ProcessIndexing(documentId, CancellationToken.None, null));
 
             var job = await _uow.DocumentJobs.GetByDocumentIdAsync(documentId);
             if (job == null)
             {
-                job = new DocumentJob { DocumentId = document.Id, GenQaJobId = jobId, StatusGenQa = StatusJob.Pending };
+                job = new DocumentJob { DocumentId = document.Id, IndexingJobId = jobId, StatusIndexing = StatusJob.Pending };
                 await _uow.DocumentJobs.AddAsync(job);
             }
             else
             {
-                job.GenQaJobId = jobId;
-                job.StatusGenQa = StatusJob.Pending;
+                job.IndexingJobId = jobId;
+                job.StatusIndexing = StatusJob.Pending;
                 _uow.DocumentJobs.Update(job);
             }
 
-            document.Status = StatusDocument.ProcessingGenQa;
-            document.GenQaStartedAt = DateTime.UtcNow;
+            document.Status = StatusDocument.ProcessingIndexing;
+            document.IndexingStartedAt = DateTime.UtcNow;
             _uow.Documents.Update(document);
             await _uow.SaveChangesAsync();
 
@@ -398,12 +382,12 @@ public class DocumentService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "GenQA processing error for document {Id}", documentId);
+            _logger.LogError(ex, "Indexing processing error for document {Id}", documentId);
             return new ServiceResult<Guid> { IsSuccess = false, ErrorMessage = ex.Message };
         }
     }
 
-    public async Task<ServiceResult<string>> CancelGenQA(Guid documentId)
+    public async Task<ServiceResult<string>> CancelIndexing(Guid documentId)
     {
         try
         {
@@ -412,48 +396,48 @@ public class DocumentService
                 return new ServiceResult<string> { IsSuccess = false, ErrorMessage = "Document not found" };
 
             var job = await _uow.DocumentJobs.GetByDocumentIdAsync(documentId);
-            if (job == null || string.IsNullOrEmpty(job.GenQaJobId))
-                return new ServiceResult<string> { IsSuccess = false, ErrorMessage = "GenQA job not found or already completed" };
+            if (job == null || string.IsNullOrEmpty(job.IndexingJobId))
+                return new ServiceResult<string> { IsSuccess = false, ErrorMessage = "Indexing job not found or already completed" };
 
-            if (document.Status != StatusDocument.ProcessingGenQa)
-                return new ServiceResult<string> { IsSuccess = false, ErrorMessage = $"GenQA job is not running. Current status: {document.Status}" };
+            if (document.Status != StatusDocument.ProcessingIndexing)
+                return new ServiceResult<string> { IsSuccess = false, ErrorMessage = $"Indexing job is not running. Current status: {document.Status}" };
 
-            BackgroundJob.Delete(job.GenQaJobId);
+            BackgroundJob.Delete(job.IndexingJobId);
 
             document.Status = StatusDocument.Canceled;
             _uow.Documents.Update(document);
-            job.StatusGenQa = StatusJob.Canceled;
+            job.StatusIndexing = StatusJob.Canceled;
             _uow.DocumentJobs.Update(job);
             await _uow.SaveChangesAsync();
 
-            _logger.LogInformation("GenQA job {JobId} deleted for Document {DocumentId}", job.GenQaJobId, documentId);
+            _logger.LogInformation("Indexing job {JobId} deleted for Document {DocumentId}", job.IndexingJobId, documentId);
             return new ServiceResult<string>
             {
                 IsSuccess = true,
-                Data = $"GenQA job {job.GenQaJobId} has been canceled."
+                Data = $"Indexing job {job.IndexingJobId} has been canceled."
             };
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error canceling GenQA for document {Id}", documentId);
+            _logger.LogError(ex, "Error canceling indexing for document {Id}", documentId);
             return new ServiceResult<string> { IsSuccess = false, ErrorMessage = ex.Message };
         }
     }
 
-    public async Task<ServiceResult<int>> RecoverStuckGenQAJobsAsync()
+    public async Task<ServiceResult<int>> RecoverStuckIndexingJobsAsync()
     {
         try
         {
-            var stuckDocuments = await _uow.Documents.GetByStatusAsync(StatusDocument.ProcessingGenQa);
+            var stuckDocuments = await _uow.Documents.GetByStatusAsync(StatusDocument.ProcessingIndexing);
             var stuckList = stuckDocuments.ToList();
 
             if (stuckList.Count == 0)
             {
-                _logger.LogInformation("No stuck GenQA jobs found.");
+                _logger.LogInformation("No stuck indexing jobs found.");
                 return new ServiceResult<int> { IsSuccess = true, Data = 0 };
             }
 
-            _logger.LogInformation("Found {Count} documents stuck in ProcessingGenQa. Attempting recovery...", stuckList.Count);
+            _logger.LogInformation("Found {Count} documents stuck in ProcessingIndexing. Attempting recovery...", stuckList.Count);
             var recovered = 0;
 
             foreach (var doc in stuckList)
@@ -470,56 +454,56 @@ public class DocumentService
                         var existingJob = await _uow.DocumentJobs.GetByDocumentIdAsync(document.Id);
                         if (existingJob != null)
                         {
-                            existingJob.StatusGenQa = StatusJob.Failed;
+                            existingJob.StatusIndexing = StatusJob.Failed;
                         }
                         continue;
                     }
 
                     var documentJob = await _uow.DocumentJobs.GetByDocumentIdAsync(document.Id);
-                    if (documentJob != null && !string.IsNullOrEmpty(documentJob.GenQaJobId))
+                    if (documentJob != null && !string.IsNullOrEmpty(documentJob.IndexingJobId))
                     {
-                        BackgroundJob.Delete(documentJob.GenQaJobId);
+                        BackgroundJob.Delete(documentJob.IndexingJobId);
                     }
 
-                    var newJobId = BackgroundJob.Enqueue<IGenQaBackgroundJobService>(
+                    var newJobId = BackgroundJob.Enqueue<IDocumentIndexingBackgroundJobService>(
                         "critical",
-                        x => x.ProcessGenChunkQA(document.Id, CancellationToken.None, null));
+                        x => x.ProcessIndexing(document.Id, CancellationToken.None, null));
 
                     if (documentJob == null)
                     {
                         documentJob = new DocumentJob
                         {
                             DocumentId = document.Id,
-                            GenQaJobId = newJobId,
-                            StatusGenQa = StatusJob.Pending
+                            IndexingJobId = newJobId,
+                            StatusIndexing = StatusJob.Pending
                         };
                         await _uow.DocumentJobs.AddAsync(documentJob);
                     }
                     else
                     {
-                        documentJob.GenQaJobId = newJobId;
-                        documentJob.StatusGenQa = StatusJob.Pending;
+                        documentJob.IndexingJobId = newJobId;
+                        documentJob.StatusIndexing = StatusJob.Pending;
                     }
 
-                    document.GenQaStartedAt = DateTime.UtcNow;
+                    document.IndexingStartedAt = DateTime.UtcNow;
 
-                    _logger.LogInformation("Recovered GenQA job for document {Id}: new job {JobId}", document.Id, newJobId);
+                    _logger.LogInformation("Recovered indexing job for document {Id}: new job {JobId}", document.Id, newJobId);
                     recovered++;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Failed to recover GenQA job for document {Id}", doc.Id);
+                    _logger.LogError(ex, "Failed to recover indexing job for document {Id}", doc.Id);
                 }
             }
 
             await _uow.SaveChangesAsync();
-            _logger.LogInformation("GenQA recovery completed. Recovered {Count} jobs.", recovered);
+            _logger.LogInformation("Indexing recovery completed. Recovered {Count} jobs.", recovered);
 
             return new ServiceResult<int> { IsSuccess = true, Data = recovered };
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "GenQA recovery error");
+            _logger.LogError(ex, "Indexing recovery error");
             return new ServiceResult<int> { IsSuccess = false, ErrorMessage = ex.Message };
         }
     }
@@ -541,15 +525,12 @@ public class DocumentService
                     if (originalStream == null) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "Original file not found in storage" };
                     return new ServiceResult<(Stream, string, string)> { IsSuccess = true, Data = (originalStream, "application/pdf", f.FileName) };
 
-                case "qa-markdown":
-                    if (string.IsNullOrEmpty(f.QaContent)) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "QAs not yet generated" };
+                case "chunks-markdown":
+                    if (string.IsNullOrEmpty(f.ChunkContent)) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "Chunks not yet generated" };
 
-                    var qaMdResult = await GetQaContentAsync(id);
-                    if (!qaMdResult.IsSuccess) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = qaMdResult.ErrorMessage };
-
-                    var qaMd = RenderQaToMarkdown(f.FileName, qaMdResult.Data);
-                    var ms = new MemoryStream(Encoding.UTF8.GetBytes(qaMd));
-                    return new ServiceResult<(Stream, string, string)> { IsSuccess = true, Data = (ms, "text/markdown", $"{Path.GetFileNameWithoutExtension(f.FileName)}_QAs.md") };
+                    var chunksContent = f.ChunkContent;
+                    var ms = new MemoryStream(Encoding.UTF8.GetBytes(chunksContent));
+                    return new ServiceResult<(Stream, string, string)> { IsSuccess = true, Data = (ms, "application/json", $"{Path.GetFileNameWithoutExtension(f.FileName)}_Chunks.json") };
 
                 case "ocr-markdown":
                     if (string.IsNullOrEmpty(f.OcrContent)) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "OCR result not found" };
@@ -560,7 +541,7 @@ public class DocumentService
                     return await DownloadAllAsync(f);
 
                 default:
-                    return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "Invalid scope. Allowed values: original, ocr-markdown, qa-markdown, all" };
+                    return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "Invalid scope. Allowed values: original, ocr-markdown, chunks-markdown, all" };
             }
         }
         catch (Exception ex)
@@ -598,16 +579,11 @@ public class DocumentService
                 await entryStream.WriteAsync(Encoding.UTF8.GetBytes(f.OcrContent));
             }
 
-            if (!string.IsNullOrEmpty(f.QaContent))
+            if (!string.IsNullOrEmpty(f.ChunkContent))
             {
-                var qaResult = await GetQaContentAsync(f.Id);
-                if (qaResult.IsSuccess && qaResult.Data != null)
-                {
-                    var qaMd = RenderQaToMarkdown(f.FileName, qaResult.Data);
-                    var entry = archive.CreateEntry($"{baseName}_QAs.md", CompressionLevel.Optimal);
-                    await using var entryStream = entry.Open();
-                    await entryStream.WriteAsync(Encoding.UTF8.GetBytes(qaMd));
-                }
+                var entry = archive.CreateEntry($"{baseName}_Chunks.json", CompressionLevel.Optimal);
+                await using var entryStream = entry.Open();
+                await entryStream.WriteAsync(Encoding.UTF8.GetBytes(f.ChunkContent));
             }
 
             if (!string.IsNullOrEmpty(f.SummaryContent))
@@ -620,36 +596,6 @@ public class DocumentService
 
         zipStream.Position = 0;
         return new ServiceResult<(Stream, string, string)> { IsSuccess = true, Data = (zipStream, "application/zip", $"{baseName}_All.zip") };
-    }
-
-    private static string RenderQaToMarkdown(string fileName, List<ChunkQAInfor>? chunkQAs)
-    {
-        if (chunkQAs == null) return string.Empty;
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"# QAs for {fileName}");
-        sb.AppendLine();
-
-        int qCount = 1;
-        foreach (var chunk in chunkQAs)
-        {
-            if (chunk?.QAs != null)
-            {
-                foreach (var qa in chunk.QAs)
-                {
-                    if (qa == null) continue;
-
-                    sb.AppendLine($"### Question [{qCount}]: {qa.Question}");
-                    sb.AppendLine($"**Answer**: {qa.Answer}");
-                    sb.AppendLine();
-                    qCount++;
-                }
-            }
-
-            // Table QAs are now included in the flat QAs list above
-        }
-
-        return sb.ToString();
     }
 
     public async Task<ServiceResult<string>> GetOcrContentAsync(Guid id)
@@ -668,20 +614,19 @@ public class DocumentService
         }
     }
 
-    public async Task<ServiceResult<List<ChunkQAInfor>>> GetQaContentAsync(Guid id)
+    public async Task<ServiceResult<string>> GetChunkContentAsync(Guid id)
     {
         try
         {
             var f = await _uow.Documents.GetByIdAsync(id);
-            if (f == null || string.IsNullOrEmpty(f.QaContent)) return new ServiceResult<List<ChunkQAInfor>> { IsSuccess = false, ErrorMessage = "QA content not found" };
+            if (f == null || string.IsNullOrEmpty(f.ChunkContent)) return new ServiceResult<string> { IsSuccess = false, ErrorMessage = "Chunk content not found" };
 
-            var data = JsonSerializer.Deserialize<List<ChunkQAInfor>>(f.QaContent, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            return new ServiceResult<List<ChunkQAInfor>> { IsSuccess = true, Data = data ?? new() };
+            return new ServiceResult<string> { IsSuccess = true, Data = f.ChunkContent };
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting QA content {Id}", id);
-            return new ServiceResult<List<ChunkQAInfor>> { IsSuccess = false, ErrorMessage = "Internal server error" };
+            _logger.LogError(ex, "Error getting chunk content {Id}", id);
+            return new ServiceResult<string> { IsSuccess = false, ErrorMessage = "Internal server error" };
         }
     }
 

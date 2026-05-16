@@ -22,11 +22,13 @@ The app **will not start** without these running locally:
 - **MinIO** (port 9000) - S3-compatible storage, configured in `AWS.ServiceURL`
 - **TokenCountService** (port 8000) - external service for token counting
 - **OCRService** (port 5258) - external OCR service
+- **Qdrant** (port 6334) - vector database, configured in `Qdrant.Host` (supports cloud)
 
 ## Environment Variables
 `.env` file is loaded via `DotNetEnv` **before** `appsettings.json`. Contains:
 - `LlmProviders__Nvidia__ApiKey` - Nvidia NIM API key
 - `POSTGRES_PASSWORD` - database password
+- `Qdrant__ApiKey` - Qdrant cloud API key (if using cloud instance)
 
 ---
 
@@ -205,7 +207,7 @@ Infrastructure/
   │     ├── AccessControlService.cs   # RBAC logic
   │     ├── GenQAsService.cs
   │     └── RedisCacheService.cs
-  └── ExternalServices/         # OCRService, TokenCountService
+  └── ExternalServices/         # OCRService, TokenCountService, QdrantService
 
 Models/
   ├── Entities/                 # All EF entities
@@ -253,6 +255,20 @@ services.AddSingleton<LlmServiceFactory>();
 - `BucketUploads` - original PDF/DOCX files
 - `BucketOcr` - OCR output (.md, -summary.txt)
 - `BucketQas` - generated Q&A (.json)
+
+### Qdrant (Vector Database)
+`Qdrant.Client` NuGet package (v1.18.1) - gRPC-based client for Qdrant vector DB.
+
+**Interface**: `IQdrantService` in `Application/Interfaces/ExternalServices/`
+**Implementation**: `QdrantService` in `Infrastructure/ExternalServices/`
+**Config**: `Options/QdrantOptions.cs` - section `"Qdrant"` in appsettings.json
+
+**Collection init**: Auto-created in `SystemInitializationService.StartAsync`:
+- Collection name: `documents`
+- Vector dimension: configurable via `Qdrant.Embedding.Dimension` (default 1024)
+- Distance: configurable via `Qdrant.Embedding.Distance` (Cosine/Euclid/Dot)
+- Custom sharding: enabled via `Qdrant.DefaultCollection.ShardingMethod = "Custom"`
+- Shard count: configurable via `Qdrant.DefaultCollection.ShardNumber` (default 2)
 
 ### Background Jobs
 `GenQaBackgroundJobService` handles Q&A generation:

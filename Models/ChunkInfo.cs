@@ -6,6 +6,7 @@ namespace MarkdownGenQAs.Models;
 public class ChunkInfo
 {
     [JsonPropertyName("type")]
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public TypeChunk Type { get; set; }
     [JsonPropertyName("tokens_count")]
     public int TokensCount { get; set; }
@@ -21,6 +22,12 @@ public class ChunkInfo
 
     [JsonIgnore]
     public bool NeedsSummary { get; set; }
+
+    [JsonIgnore]
+    public int SourceStart { get; set; }
+
+    [JsonIgnore]
+    public int SourceEnd { get; set; }
 
     [JsonPropertyName("index")]
     public int Index { get; set; }

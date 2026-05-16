@@ -1,9 +1,10 @@
-using System.Text;
 using MarkdownGenQAs.Application.Dto.User.Dataset;
+using MarkdownGenQAs.Application.Interfaces.ExternalServices;
 using MarkdownGenQAs.Application.Interfaces.Repository;
 using MarkdownGenQAs.Application.Interfaces.Services;
 using MarkdownGenQAs.Helper;
 using MarkdownGenQAs.Infrastructure;
+using MarkdownGenQAs.Utils;
 using MarkdownGenQAs.Infrastructure.Interceptors;
 using MarkdownGenQAs.Models;
 using MarkdownGenQAs.Models.Entities;
@@ -19,6 +20,7 @@ public class DatasetService
     private readonly IUnitOfWork _uow;
     private readonly IAccessControlService _accessControl;
     private readonly IS3Service _s3Service;
+    private readonly IQdrantService _qdrantService;
     private readonly ILogger<DatasetService> _logger;
 
     public DatasetService(
@@ -26,12 +28,14 @@ public class DatasetService
         IUnitOfWork uow,
         IAccessControlService accessControl,
         IS3Service s3Service,
+        IQdrantService qdrantService,
         ILogger<DatasetService> logger)
     {
         _context = context;
         _uow = uow;
         _accessControl = accessControl;
         _s3Service = s3Service;
+        _qdrantService = qdrantService;
         _logger = logger;
     }
 
@@ -159,8 +163,22 @@ public class DatasetService
             CountDocument = 0
         };
 
+        using var transaction = await _context.Database.BeginTransactionAsync();
         await _uow.Datasets.AddAsync(dataset);
         await _uow.SaveChangesAsync();
+
+        try
+        {
+            await _qdrantService.CreateShardKeyAsync("documents", dataset.Id);
+            _logger.LogInformation("[Qdrant] Created shard key for dataset {DatasetId}", dataset.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Qdrant] Failed to create shard key for dataset {DatasetId}, rolling back", dataset.Id);
+            throw;
+        }
+
+        await transaction.CommitAsync();
 
         _logger.LogInformation("Dataset {DatasetId} created by user {UserId}", dataset.Id, userId);
 
@@ -361,12 +379,12 @@ public class DatasetService
                     doc.FileName,
                     doc.Status.ToString(),
                     doc.IsOcred,
-                    doc.IsQaGenerated,
+                    doc.IsIndexed,
                     doc.DocumentJob != null ? new DocumentJobBriefDto(
                         doc.DocumentJob.OcrJobId,
-                        doc.DocumentJob.GenQaJobId,
+                        doc.DocumentJob.IndexingJobId,
                         doc.DocumentJob.StatusOcr.ToString(),
-                        doc.DocumentJob.StatusGenQa.ToString()
+                        doc.DocumentJob.StatusIndexing.ToString()
                     ) : null
                 ) : null
             };
@@ -475,26 +493,21 @@ public class DatasetService
             if (fileStream == null || string.IsNullOrEmpty(fileName))
                 return new ServiceResult<CreateItemResponseDto> { IsSuccess = false, ErrorMessage = "File is required for Document type" };
 
+            if (!fileStream.CanSeek)
+            {
+                var buffered = new MemoryStream();
+                await fileStream.CopyToAsync(buffered);
+                buffered.Position = 0;
+                fileStream = buffered;
+            }
+
             var extension = Path.GetExtension(fileName).ToLowerInvariant();
             if (extension != ".pdf")
                 return new ServiceResult<CreateItemResponseDto> { IsSuccess = false, ErrorMessage = "Only PDF files are supported" };
 
-            var buffer = new byte[4];
-            long currentPosition = 0;
-            if (fileStream.CanSeek)
-            {
-                currentPosition = fileStream.Position;
-                await fileStream.ReadExactlyAsync(buffer, 0, 4);
-                fileStream.Position = currentPosition;
-            }
-            else
-            {
-                await fileStream.ReadExactlyAsync(buffer, 0, 4);
-            }
-
-            var signature = Encoding.ASCII.GetString(buffer);
-            if (signature != "%PDF")
-                return new ServiceResult<CreateItemResponseDto> { IsSuccess = false, ErrorMessage = "Invalid PDF file content" };
+            var (isValid, errorMessage) = await ValidateFileUtil.ValidatePdfAsync(fileStream, fileName);
+            if (!isValid)
+                return new ServiceResult<CreateItemResponseDto> { IsSuccess = false, ErrorMessage = errorMessage };
 
             var existingFile = (await _uow.Documents.FindAsync(f => f.FileName == fileName)).FirstOrDefault();
             if (existingFile != null)
@@ -577,7 +590,7 @@ public class DatasetService
                         document.FileName,
                         document.Status.ToString(),
                         document.IsOcred,
-                        document.IsQaGenerated,
+                        document.IsIndexed,
                         null
                     )
                 }

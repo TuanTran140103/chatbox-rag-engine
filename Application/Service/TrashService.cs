@@ -49,7 +49,7 @@ public class TrashService : ITrashService
         }
 
         // Datasets — filter by accessibility
-        var accessibleDatasetIds = await _accessControl.GetAccessibleDatasetIdsAsync(userId);
+        var accessibleDatasetIds = await _accessControl.GetAccessibleDatasetIdsAsync(userId, includeDeleted: true);
 
         var deletedDatasets = await _context.Datasets
             .IgnoreQueryFilters()

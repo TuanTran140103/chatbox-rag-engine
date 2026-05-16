@@ -5,6 +5,7 @@ public record TemplateMetadataDetailDto(
     string Name,
     string? Description,
     string JsonSchema,
+    List<string>? IndexKeys,
     DateTime CreatedAt,
     DateTime UpdatedAt,
     Guid? CreatedBy

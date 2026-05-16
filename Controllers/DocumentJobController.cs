@@ -139,7 +139,7 @@ public class OCRFileJobController : ControllerBase
         {
             DocumentId = job.DocumentId,
             OcrJobId = job.OcrJobId,
-            GenQaJobId = job.GenQaJobId,
+            IndexingJobId = job.IndexingJobId,
         };
     }
 }

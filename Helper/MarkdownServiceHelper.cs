@@ -270,6 +270,7 @@ public class MarkdownServiceHelper
         var n1 = c1.Trim().ToLowerInvariant();
         var n2 = c2.Trim().ToLowerInvariant();
 
+        if (string.IsNullOrEmpty(n1) || string.IsNullOrEmpty(n2)) return 0.0;
         if (n1 == n2) return 1.0;
         if (n1.Contains(n2) || n2.Contains(n1)) return 0.8;
 

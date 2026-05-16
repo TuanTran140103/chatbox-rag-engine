@@ -16,7 +16,7 @@ Base URL: `/api/v1/documents`
 
 ### 1.1. Get Document Detail
 
-Lấy thông tin chi tiết document, bao gồm nội dung OCR, Q&A, và Summary.
+Lấy thông tin chi tiết document, bao gồm nội dung OCR, Summary, và Metadata.
 
 ```
 GET /api/v1/documents/{id:guid}/detail
@@ -30,18 +30,15 @@ GET /api/v1/documents/{id:guid}/detail
   "fileName": "Bao-cao-2025.pdf",
   "status": "Successed",
   "processingTimeOcr": 120,
-  "processingTimeGenQa": 60,
   "isOcred": true,
-  "isQaGenerated": false,
+  "isIndexed": false,
   "ocrCount": 10,
-  "genQaCount": 0,
   "userId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
   "categoryId": "3fa85f64-5717-4562-b3fc-2c963f66afa8",
   "categoryName": "Báo cáo",
   "createdAt": "2025-01-01T00:00:00Z",
   "content": {
     "ocrMarkdown": "# Bao cao 2025\n\n## Section 1...",
-    "qas": null,
     "summary": null
   },
   "metadata": {
@@ -62,11 +59,9 @@ GET /api/v1/documents/{id:guid}/detail
 | fileName | string | Tên file |
 | status | string | Trạng thái xử lý |
 | processingTimeOcr | int | Thời gian OCR (giây) |
-| processingTimeGenQa | int | Thời gian gen Q&A (giây) |
 | isOcred | bool | Đã OCR chưa |
-| isQaGenerated | bool | Đã gen Q&A chưa |
+| isIndexed | bool | Đã index lên Qdrant chưa |
 | ocrCount | int | Số trang OCR |
-| genQaCount | int | Số cặp Q&A |
 | userId | guid? | User upload |
 | categoryId | guid? | Category ID |
 | categoryName | string? | Tên category |
@@ -78,45 +73,7 @@ GET /api/v1/documents/{id:guid}/detail
 | Field | Type | Description |
 |-------|------|-------------|
 | ocrMarkdown | string? | Toàn bộ nội dung OCR dạng Markdown |
-| qas | ChunkQAInfor[]? | Mảng các chunk Q&A |
-| summary | string? | Tóm tắt document |
-
-**ChunkQAInfor structure:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| chunk_infor | ChunkInfo | Thông tin chunk |
-| chunk_infor.type | TypeChunk | Loại chunk: Text, Table, Summary |
-| chunk_infor.tokens_count | int | Số tokens |
-| chunk_infor.title | string? | Tiêu đề chunk |
-| chunk_infor.tittle_hirarchy | string? | Hierarchical title path |
-| chunk_infor.content | string | Nội dung text của chunk |
-| chunk_infor.content_summary | string? | Content summary (chỉ khi type=Summary) |
-| chunk_infor.table_chunks | ChunkInfo[] | Sub-chunks cho table |
-| qas | ChunkQA[] | Danh sách cặp câu hỏi-trả lời. **v2+**: QA của table được gộp vào đây với `qa_type: "table"`. |
-| qas[].question | string | Câu hỏi |
-| qas[].answer | string | Câu trả lời (trích xuất từ document) |
-| qas[].category | string? | Thể loại câu hỏi |
-| qas[].qa_type | string? | **v2+** Loại QA: `"text"` — từ văn bản; `"table"` — từ bảng biểu |
-| table_chunk_qas | ChunkQAInfor[]? | **Deprecated (v2/v3)** — Giữ lại để tương thích ngược |
-
-### ChunkQAInfor — v2/v3 Structure (combined QA)
-
-Từ v2 trở đi, `table_chunk_qas` bị xoá. QA của table được gộp chung vào mảng `qas` với field `qa_type` phân biệt:
-
-```json
-{
-  "chunk_infor": { "type": "Text", ... },
-  "qas": [
-    { "question": "...", "answer": "...", "category": "...", "qa_type": "text" },
-    { "question": "...", "answer": "...", "category": "...", "qa_type": "table" }
-  ]
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| qas[].qa_type | string | `"text"` — QA từ văn bản; `"table"` — QA từ bảng biểu |
+| summary | string? | Tóm tắt document (từ LLM) |
 
 ### Response (404)
 
@@ -153,43 +110,35 @@ Content here...
 
 ---
 
-### 1.3. Get QA Content
+### 1.3. Get Chunk Content
 
-Lấy chỉ nội dung Q&A của document.
+Lấy nội dung chunks (JSON) của document — kết quả từ bước chunking trong Indexing Pipeline.
 
 ```
-GET /api/v1/documents/{id:guid}/content/qa
+GET /api/v1/documents/{id:guid}/content/chunks
 ```
 
 ### Response (200)
 
+Trả về JSON array của `ChunkInfo`:
+
 ```json
 [
   {
-    "chunk_infor": {
-      "type": "Text",
-      "tokens_count": 512,
-      "title": "1. Mục tiêu",
-      "tittle_hirarchy": "Báo cáo / 1. Mục tiêu",
-      "content": "Nội dung text của chunk...",
-      "content_summary": null,
-      "table_chunks": []
-    },
-    "qas": [
-      {
-        "question": "Câu hỏi gì đó?",
-        "answer": "Câu trả lời chi tiết nhưng súc tích, trích xuất từ tài liệu",
-        "category": "Objective",
-        "qa_type": "text"
-      },
-      {
-        "question": "Chỉ tiêu doanh thu năm 2025 là bao nhiêu?",
-        "answer": "100 tỷ",
-        "category": "Financial",
-        "qa_type": "table"
-      }
-    ],
-    "table_chunk_qas": null
+    "type": "Text",
+    "tokens_count": 512,
+    "title": "1. Mục tiêu",
+    "tittle_hirarchy": "Báo cáo / 1. Mục tiêu",
+    "content": "Nội dung text của chunk...",
+    "content_summary": null,
+    "index": 0
+  },
+  {
+    "type": "Table",
+    "tokens_count": 128,
+    "title": "Bảng doanh thu",
+    "content": "| Năm | Doanh thu |\n|-----|----------|\n| 2024 | 80 tỷ |\n| 2025 | 100 tỷ |",
+    "index": 5
   }
 ]
 ```
@@ -198,25 +147,18 @@ GET /api/v1/documents/{id:guid}/content/qa
 
 | Field | Type | Description |
 |-------|------|-------------|
-| chunk_infor | ChunkInfo | Thông tin chunk |
-| chunk_infor.type | TypeChunk | Loại chunk: Text, Table, Summary |
-| chunk_infor.tokens_count | int | Số tokens |
-| chunk_infor.title | string? | Tiêu đề chunk |
-| chunk_infor.tittle_hirarchy | string? | Hierarchical title path |
-| chunk_infor.content | string | Nội dung text của chunk |
-| chunk_infor.content_summary | string? | Content summary (chỉ khi type=Summary) |
-| chunk_infor.table_chunks | ChunkInfo[] | Sub-chunks cho table |
-| qas | ChunkQA[] | Danh sách cặp Q&A |
-| qas[].question | string | Câu hỏi |
-| qas[].answer | string | Câu trả lời |
-| qas[].category | string? | Thể loại câu hỏi |
-| qas[].qa_type | string? | Loại QA: `"text"` — từ văn bản; `"table"` — từ bảng biểu trong chunk. **Chỉ có khi dùng v2 API**. |
-| table_chunk_qas | ChunkQAInfor[]? | **Deprecated (v2/v3)** — Q&A của table được gộp vào `qas` với `qa_type: "table"`. Giữ lại để tương thích ngược. |
+| type | TypeChunk | Loại chunk: `Text`, `Table` |
+| tokens_count | int | Số tokens của chunk |
+| title | string? | Tiêu đề chunk (từ heading gần nhất) |
+| tittle_hirarchy | string? | Hierarchical title path |
+| content | string | Nội dung text của chunk |
+| content_summary | string? | Content summary (cho chunk lớn cần tóm tắt) |
+| index | int | Thứ tự chunk trong document |
 
 ### Response (404)
 
 ```json
-"QA content not found"
+"Chunk content not found"
 ```
 
 ---
@@ -251,7 +193,7 @@ Lấy lịch sử các thông báo xử lý của document **sau khi job đã ho
 
 | Nguồn dữ liệu | Mô tả |
 |---------------|-------|
-| Database (`LogMessage.LogsOcr` / `LogsGenQa`) | Ghi vào cuối mỗi lần xử lý hoàn tất |
+| Database (`LogMessage.LogsOcr` / `LogsIndexing`) | Ghi vào cuối mỗi lần xử lý hoàn tất |
 
 ```
 GET /api/v1/documents/{id:guid}/logs?type=ocr
@@ -261,7 +203,7 @@ GET /api/v1/documents/{id:guid}/logs?type=ocr
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| type | string | ocr | Loại process: `ocr` hoặc `gen-qa` |
+| type | string | ocr | Loại process: `ocr` hoặc `indexing` |
 
 ### Response (200)
 
@@ -296,9 +238,9 @@ GET /api/v1/documents/{id:guid}/logs?type=ocr
 | timestamp | string | Thời gian (dd/MM/yyyy HH:mm:ss) |
 | message | string | Nội dung thông báo |
 | status | string | Trạng thái: `Pending`, `Processing`, `Succeeded`, `Failed`, `Canceled` |
-| processType | string? | Loại process: `ocr` hoặc `gen-qa` |
+| processType | string? | Loại process: `ocr` hoặc `indexing` |
 | processingTime | double? | Thời gian xử lý (giây) |
-| stage | string | Giai đoạn: `OCR` hoặc `GenQA` |
+| stage | string | Giai đoạn: `OCR` hoặc `Indexing` |
 
 ### Response (400)
 
@@ -320,7 +262,7 @@ GET /api/v1/documents/{id:guid}/notifications?type=ocr
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| type | string | ocr | Loại process: `ocr` hoặc `gen-qa` |
+| type | string | ocr | Loại process: `ocr` hoặc `indexing` |
 
 ### Behavior
 
@@ -345,9 +287,9 @@ data: {"documentId":"3fa85f64-5717-4562-b3fc-2c963f66afa6","timestamp":"01/06/20
 | timestamp | string | Thời gian sự kiện (dd/MM/yyyy HH:mm:ss) | `"01/06/2025 10:30:48"` |
 | message | string | Nội dung thông báo mô tả trạng thái | `"OCR processing started"` |
 | status | string | Trạng thái xử lý hiện tại | `"Pending"`, `"Processing"`, `"Succeeded"`, `"Failed"`, `"Canceled"` |
-| processType | string? | Loại process: `ocr` hoặc `gen-qa` | `"ocr"` |
+| processType | string? | Loại process: `ocr` hoặc `indexing` | `"ocr"` |
 | processingTime | double? | Thời gian xử lý tính bằng giây (null nếu chưa xong) | `120`, `null` |
-| stage | string | Giai đoạn xử lý: `OCR` hoặc `GenQA` | `"OCR"` |
+| stage | string | Giai đoạn xử lý: `OCR` hoặc `Indexing` | `"OCR"` |
 | entryId | string? | ID của stream entry (dùng cho resume, có thể null) | `"entry-123"` |
 
 ### Status Values
@@ -449,18 +391,18 @@ POST /api/v1/documents/ocr/cancel/{id:guid}
 
 ---
 
-## Part 3: GenQA Operations
+## Part 3: Indexing Operations
 
 Base URL: `/api/v1/documents`
 
 ---
 
-### 3.1. Trigger QA Generation
+### 3.1. Trigger Document Indexing
 
-Kích hoạt tạo Q&A cho document đã OCR.
+Kích hoạt Document Indexing Pipeline cho document đã OCR. Pipeline thực hiện đồng thời: **Metadata Extraction**, **Chunking**, **Summary**, sau đó **Index lên Qdrant**.
 
 ```
-POST /api/v1/documents/gen-qa/process/{id:guid}
+POST /api/v1/documents/indexing/process/{id:guid}
 ```
 
 ### Prerequisites
@@ -471,59 +413,76 @@ POST /api/v1/documents/gen-qa/process/{id:guid}
 ### Response (202 Accepted)
 
 ```json
-{
-  "message": "QA generation job scheduled"
-}
+"documentId"
 ```
 
 ### Response (400)
 
 ```json
-"Document must be OCRed first"
+"OCR must be completed before indexing. Current status: ..."
 ```
 
 ### Response (404)
 
 ```json
-"File not found"
+"File record not found"
 ```
 
 ### Behavior
 
-- GenQA job được tạo trong Hangfire
-- `document.Status` chuyển sang `ProcessingGenQa`
-- `DocumentJob.StatusGenQa` được set là `Pending` — chờ Hangfire schedule job chạy
-- Khi job bắt đầu thực thi, `StatusGenQa` chuyển thành `Processing`
-- Kết quả Q&A được lưu vào `Document.QaContent` (JSON array)
+- Indexing job được tạo trong Hangfire qua `IDocumentIndexingBackgroundJobService`
+- `document.Status` chuyển sang `ProcessingIndexing`
+- `DocumentJob.StatusIndexing` được set là `Pending` — chờ Hangfire schedule
+
+**Pipeline thực thi:**
+
+```
+PHASE 1 (Concurrent):
+  ├── Metadata Extraction  → Document.MetadataContent
+  ├── Chunking             → Document.ChunkContent (JSON: List<ChunkInfo>)
+  │     ├── Text chunks    → MarkdownService.CreateChunkAsync
+  │     ├── Table chunks   → MarkdownService.CreateChunkTableAsync
+  │     └── Summarize large chunks (concurrency: 3)
+  └── Summary              → Document.SummaryContent (GenQAsService)
+
+PHASE 2 (Sau Phase 1):
+  └── Index to Qdrant      → IQdrantService.AddDocumentPointAsync
+        ├── Đọc chunks từ ChunkContent
+        ├── Generate embeddings
+        └── Upsert PointStructs lên collection "documents"
+
+→ document.Status = Successed
+→ document.IsIndexed = true
+```
 
 ---
 
-### 3.2. Cancel GenQA Job
+### 3.2. Cancel Indexing Job
 
-Hủy GenQA job đang chạy.
+Hủy indexing job đang chạy.
 
 ```
-POST /api/v1/documents/gen-qa/cancel/{id:guid}
+POST /api/v1/documents/indexing/cancel/{id:guid}
 ```
 
 ### Response (200)
 
 ```json
 {
-  "message": "GenQA job cancelled successfully"
+  "message": "Indexing job ... has been canceled."
 }
 ```
 
 ### Response (400)
 
 ```json
-"GenQA job not found or cannot be canceled"
+"Indexing job is not running. Current status: ..."
 ```
 
 ### Response (404)
 
 ```json
-"File not found"
+"Document not found"
 ```
 
 ---
@@ -570,7 +529,7 @@ GET /api/v1/documents/{id:guid}/metadata
 
 ### 4.2. Update Document Metadata (Human Review)
 
-Ghi đè metadata sau khi human review. Dùng khi AI extract sai hoặc muốn sửa tay.
+Ghi đè metadata sau khi human review. Dùng khi AI extract sai hoặc muốn sửa tay. Sau khi update, có thể trigger lại Indexing Pipeline để cập nhật payload trên Qdrant.
 
 ```
 PUT /api/v1/documents/{id:guid}/metadata
@@ -620,8 +579,9 @@ PUT /api/v1/documents/{id:guid}/metadata
 
 - Cập nhật `Document.MetadataContent` với nội dung từ request body
 - Chỉ set `Document.IsMetadataExtracted = true` nếu `isExtracted = true`
-- Không trigger lại GenQA hay OCR
+- Không trigger lại indexing hay OCR
 - Dùng cho human review override kết quả AI extraction
+- Để cập nhật metadata lên Qdrant, gọi `POST /indexing/process/{id}` sau khi update
 
 ---
 
@@ -643,7 +603,7 @@ GET /api/v1/documents/{id:guid}/download?scope=original
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| scope | string | original | Phạm vi download: `original`, `ocr-markdown`, `qa-markdown`, `all` |
+| scope | string | original | Phạm vi download: `original`, `ocr-markdown`, `chunks-markdown`, `all` |
 
 ### Scope Values
 
@@ -651,8 +611,8 @@ GET /api/v1/documents/{id:guid}/download?scope=original
 |-------|-------------|-------------|
 | `original` | application/pdf | File gốc đã upload (lấy từ S3) |
 | `ocr-markdown` | text/markdown | OCR content dạng Markdown |
-| `qa-markdown` | text/markdown | Q&A content xuất ra dạng Markdown |
-| `all` | application/zip | ZIP chứa tất cả: original + OCR + Q&A + Summary |
+| `chunks-markdown` | application/json | Chunk content xuất ra dạng JSON |
+| `all` | application/zip | ZIP chứa tất cả: original + OCR + Chunks + Summary |
 
 ### `all` scope — nội dung trong ZIP
 
@@ -660,7 +620,7 @@ GET /api/v1/documents/{id:guid}/download?scope=original
 |----------------|-----------|
 | `{filename}.pdf` (hoặc .docx) | Nếu file gốc tồn tại |
 | `{filename}.md` | Nếu đã OCR |
-| `{filename}_QAs.md` | Nếu đã gen Q&A |
+| `{filename}_Chunks.json` | Nếu đã index (có ChunkContent) |
 | `{filename}_Summary.md` | Nếu có summary |
 
 ### Response (200)
@@ -670,7 +630,7 @@ File stream với Content-Type và Content-Disposition header phù hợp.
 ### Response (400)
 
 ```json
-"Invalid scope. Allowed values: original, ocr-markdown, qa-markdown, all"
+"Invalid scope. Allowed values: original, ocr-markdown, chunks-markdown, all"
 ```
 
 ### Response (404)
@@ -696,16 +656,16 @@ File stream với Content-Type và Content-Disposition header phù hợp.
 |--------|---------|
 | `Uploaded` | File vừa upload, chưa xử lý gì |
 | `ProcessingOcr` | Đang chạy OCR (hoặc đang chờ OCR service bắt đầu) |
-| `Successed` | OCR hoàn tất, đã gen Q&A thành công |
-| `Failed` | Xử lý thất bại (OCR hoặc GenQA lỗi) |
-| `ProcessingGenQa` | Đang gen Q&A (hoặc đang chờ Hangfire schedule chạy) |
+| `Successed` | OCR hoàn tất, đã index thành công |
+| `Failed` | Xử lý thất bại (OCR hoặc Indexing lỗi) |
+| `ProcessingIndexing` | Đang chạy Indexing Pipeline (metadata + chunking + summary + Qdrant) |
 | `Canceled` | User hủy tiến trình xử lý |
 
 ---
 
 ## Job Status Values (`StatusJob`)
 
-`DocumentJob` có trường `StatusOcr` và `StatusGenQa` với các giá trị:
+`DocumentJob` có trường `StatusOcr` và `StatusIndexing` với các giá trị:
 
 | Status | Ý nghĩa |
 |--------|---------|
@@ -722,9 +682,9 @@ Started  → StatusOcr = Processing (đang OCR thực tế)
 Xong     → StatusOcr = Succeeded
 ```
 
-**Ví dụ luồng trạng thái cho GenQA:**
+**Ví dụ luồng trạng thái cho Indexing:**
 ```
-API call → StatusGenQa = Pending (chờ Hangfire run)
-Job chạy → StatusGenQa = Processing (đang gen QA thực tế)
-Xong     → StatusGenQa = Succeeded
+API call → StatusIndexing = Pending (chờ Hangfire run)
+Job chạy → StatusIndexing = Processing (đang chạy Indexing Pipeline)
+Xong     → StatusIndexing = Succeeded
 ```

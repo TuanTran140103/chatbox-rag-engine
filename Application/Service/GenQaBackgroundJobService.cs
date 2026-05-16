@@ -71,7 +71,8 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
             if (string.IsNullOrEmpty(document.OcrContent)) throw new Exception("Markdown content empty");
 
             var metadataTask = RunMetadataExtractionAsync(document, cancellationToken);
-            var genQaTask = RunGenQAPipelineInNewScopeAsync(document.Id, cancellationToken);
+            // var genQaTask = RunGenQAPipelineInNewScopeAsync(document.Id, cancellationToken);
+            var genQaTask = RunChunkAndSummaryOnlyInNewScopeAsync(document.Id, cancellationToken);
 
             await Task.WhenAll(metadataTask, genQaTask);
 
@@ -156,60 +157,23 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
             return;
         }
 
-        await _uow.BeginTransactionAsync();
-        try
-        {
-            var documentJob = await _uow.DocumentJobs.GetByDocumentIdAsync(document.Id);
-            if (documentJob != null)
-            {
-                documentJob.StatusMetadata = StatusJob.Processing;
-                _uow.DocumentJobs.Update(documentJob);
-                await _uow.SaveChangesAsync();
-            }
-            await _uow.CommitTransactionAsync();
-        }
-        catch (Exception ex)
-        {
-            await _uow.RollbackTransactionAsync();
-            _logger.LogWarning(ex, "Failed to set StatusMetadata=Processing for document {Id}", document.Id);
-        }
-
         await AddLogAndBroadcastAsync(document.Id, $"[METADATA] Extracting metadata for: {document.FileName}");
 
         var sw = Stopwatch.StartNew();
         var result = await _documentService.ExtractMetadataAsync(document.Id, ct);
         sw.Stop();
 
-        await _uow.BeginTransactionAsync();
-        try
+        if (result.IsSuccess)
         {
-            var documentJob = await _uow.DocumentJobs.GetByDocumentIdAsync(document.Id);
-            if (documentJob != null)
-            {
-                if (result.IsSuccess)
-                {
-                    documentJob.StatusMetadata = StatusJob.Succeeded;
-                    _logger.LogInformation("[METADATA] Metadata extraction completed for file {Id} in {Time:0.00}s", document.Id, sw.Elapsed.TotalSeconds);
-                    await AddLogAndBroadcastAsync(document.Id, $"[METADATA] Metadata extraction completed in {sw.Elapsed.TotalSeconds:0.00}s", processingTime: sw.Elapsed.TotalSeconds);
-                }
-                else
-                {
-                    documentJob.StatusMetadata = StatusJob.Failed;
-                    documentJob.MetadataError = result.ErrorMessage;
-                    document.MetadataError = result.ErrorMessage;
-                    _uow.Documents.Update(document);
-                    _logger.LogWarning("[METADATA] Metadata extraction failed for file {Id}: {Error}", document.Id, result.ErrorMessage);
-                }
-                _uow.DocumentJobs.Update(documentJob);
-                await _uow.SaveChangesAsync();
-            }
-            await _uow.CommitTransactionAsync();
+            _logger.LogInformation("[METADATA] Metadata extraction completed for file {Id} in {Time:0.00}s", document.Id, sw.Elapsed.TotalSeconds);
+            await AddLogAndBroadcastAsync(document.Id, $"[METADATA] Metadata extraction completed in {sw.Elapsed.TotalSeconds:0.00}s", processingTime: sw.Elapsed.TotalSeconds);
         }
-        catch (Exception ex)
+        else
         {
-            await _uow.RollbackTransactionAsync();
-            _logger.LogWarning(ex, "Failed to update StatusMetadata for document {Id}", document.Id);
-            return;
+            document.MetadataError = result.ErrorMessage;
+            _uow.Documents.Update(document);
+            _logger.LogWarning("[METADATA] Metadata extraction failed for file {Id}: {Error}", document.Id, result.ErrorMessage);
+            await AddLogAndBroadcastAsync(document.Id, $"[METADATA] Metadata extraction failed: {result.ErrorMessage}", "Failed");
         }
     }
 
@@ -218,6 +182,13 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
         using var scope = _scopeFactory.CreateScope();
         var runner = scope.ServiceProvider.GetRequiredService<GenQaPipelineRunner>();
         await runner.RunAsync(documentId, ct);
+    }
+
+    private async Task RunChunkAndSummaryOnlyInNewScopeAsync(Guid documentId, CancellationToken ct)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var runner = scope.ServiceProvider.GetRequiredService<GenQaPipelineRunner>();
+        await runner.RunChunkAndSummaryOnlyAsync(documentId, ct);
     }
 
     private async Task FinalizeSuccessAsync(Document document, Stopwatch sw)

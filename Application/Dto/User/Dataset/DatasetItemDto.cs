@@ -14,13 +14,13 @@ public record DatasetItemDocumentDto(
     string FileName,
     string Status,
     bool IsOcred,
-    bool IsQaGenerated,
+    bool IsIndexed,
     DocumentJobBriefDto? Job
 );
 
 public record DocumentJobBriefDto(
     string? OcrJobId,
-    string? GenQaJobId,
+    string? IndexingJobId,
     string? StatusOcr,
-    string? StatusGenQa
+    string? StatusIndexing
 );

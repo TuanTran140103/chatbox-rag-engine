@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Linq.Expressions;
 // using MarkdownGenQAs.Application;
 using MarkdownGenQAs.Application.Interfaces.Repository;
@@ -17,6 +18,8 @@ public class GenericRepository<T> : IGenericRepository<T> where T : BaseEntity
         _dbSet = context.Set<T>();
     }
 
+    public IQueryable<T> Query => _dbSet.AsQueryable();
+
     public virtual async Task<T?> GetByIdAsync(Guid id)
     {
         return await _dbSet.FindAsync(id);
@@ -27,14 +30,18 @@ public class GenericRepository<T> : IGenericRepository<T> where T : BaseEntity
         return await _dbSet.ToListAsync();
     }
 
-    public virtual async Task<IEnumerable<T>> FindAsync(Expression<Func<T, bool>> predicate)
+    public virtual async Task<IEnumerable<T>> FindAsync(Expression<Func<T, bool>> predicate, Func<IQueryable<T>, IQueryable<T>>? include = null, CancellationToken cancellationToken = default)
     {
-        return await _dbSet.Where(predicate).ToListAsync();
+        var query = _dbSet.AsQueryable();
+        if (include != null) query = include(query);
+        return await query.Where(predicate).ToListAsync(cancellationToken);
     }
 
-    public virtual async Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate)
+    public virtual async Task<T?> FirstOrDefaultAsync(Expression<Func<T, bool>> predicate, Func<IQueryable<T>, IQueryable<T>>? include = null, CancellationToken cancellationToken = default)
     {
-        return await _dbSet.FirstOrDefaultAsync(predicate);
+        var query = _dbSet.AsQueryable();
+        if (include != null) query = include(query);
+        return await query.FirstOrDefaultAsync(predicate, cancellationToken);
     }
 
     public virtual async Task AddAsync(T entity)

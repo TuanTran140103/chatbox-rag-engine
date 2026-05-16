@@ -60,15 +60,15 @@ public class NotificationService
                 }
                 break;
 
-            case "gen-qa":
-                if (document.Status != StatusDocument.ProcessingGenQa
-                    || (documentJob?.StatusGenQa != StatusJob.Processing && documentJob?.StatusGenQa != StatusJob.Pending))
+            case "indexing":
+                if (document.Status != StatusDocument.ProcessingIndexing
+                    || (documentJob?.StatusIndexing != StatusJob.Processing && documentJob?.StatusIndexing != StatusJob.Pending))
                 {
                     yield return new NotificationMessage
                     {
                         DocumentId = documentId,
                         Status = document.Status.ToString(),
-                        Message = $"GenQA is not currently processing. Document status: {document.Status}",
+                        Message = $"Indexing is not currently processing. Document status: {document.Status}",
                         ProcessType = processType
                     };
                     yield break;
@@ -95,7 +95,7 @@ public class NotificationService
             var events = type.ToLower() switch
             {
                 "ocr" => logMessage.LogsOcr,
-                "gen-qa" => logMessage.LogsGenQa,
+                "indexing" => logMessage.LogsIndexing,
                 _ => null
             };
 

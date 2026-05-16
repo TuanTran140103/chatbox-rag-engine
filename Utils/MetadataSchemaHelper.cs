@@ -1,7 +1,9 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Json.Schema;
+using Qdrant.Client.Grpc;
 
 namespace MarkdownGenQAs.Utils;
 
@@ -286,5 +288,155 @@ public static class MetadataSchemaHelper
     {
         return results.SchemaLocation?.OriginalString?.Contains("/oneOf/") == true
             || results.SchemaLocation?.OriginalString?.Contains("/anyOf/") == true;
+    }
+
+    public static Dictionary<string, Value> ConvertToPayload(string? jsonValues, string? jsonSchema = null)
+    {
+        var payload = new Dictionary<string, Value>();
+        if (string.IsNullOrWhiteSpace(jsonValues)) return payload;
+
+        var schemaTypes = jsonSchema != null ? ParseSchemaTypes(jsonSchema) : new Dictionary<string, string>();
+        using var doc = JsonDocument.Parse(jsonValues);
+        FlattenJsonElement(doc.RootElement, string.Empty, schemaTypes, payload);
+        return payload;
+    }
+
+    public static PayloadSchemaType GetPayloadSchemaType(string jsonSchema, string fieldPath)
+    {
+        var types = ParseSchemaTypes(jsonSchema);
+        if (!types.TryGetValue(fieldPath, out var typeStr)) return PayloadSchemaType.Keyword;
+
+        return typeStr switch
+        {
+            "integer" => PayloadSchemaType.Integer,
+            "number" => PayloadSchemaType.Float,
+            "boolean" => PayloadSchemaType.Bool,
+            _ => PayloadSchemaType.Keyword
+        };
+    }
+
+    private static Dictionary<string, string> ParseSchemaTypes(string jsonSchema)
+    {
+        var types = new Dictionary<string, string>();
+        using var schemaDoc = JsonDocument.Parse(jsonSchema);
+        if (schemaDoc.RootElement.TryGetProperty("properties", out var props))
+            ParseSchemaProperties(props, string.Empty, types);
+        return types;
+    }
+
+    private static void ParseSchemaProperties(JsonElement properties, string prefix, Dictionary<string, string> types)
+    {
+        foreach (var prop in properties.EnumerateObject())
+        {
+            var key = string.IsNullOrEmpty(prefix) ? prop.Name : $"{prefix}.{prop.Name}";
+            var typeStr = ResolveSchemaType(prop.Value);
+
+            if (typeStr != null)
+                types[key] = typeStr;
+
+            if (typeStr == "object" && prop.Value.TryGetProperty("properties", out var nestedProps))
+                ParseSchemaProperties(nestedProps, key, types);
+        }
+    }
+
+    private static string? ResolveSchemaType(JsonElement propValue)
+    {
+        if (propValue.TryGetProperty("type", out var typeEl))
+        {
+            if (typeEl.ValueKind == JsonValueKind.String)
+                return typeEl.GetString();
+            if (typeEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var t in typeEl.EnumerateArray())
+                {
+                    var val = t.GetString();
+                    if (val != "null") return val;
+                }
+            }
+        }
+        if (propValue.TryGetProperty("oneOf", out var oneOfEl))
+        {
+            foreach (var branch in oneOfEl.EnumerateArray())
+            {
+                var result = ResolveSchemaType(branch);
+                if (result != null) return result;
+            }
+        }
+        if (propValue.TryGetProperty("properties", out _))
+            return "object";
+        if (propValue.TryGetProperty("items", out _))
+            return "array";
+        if (propValue.TryGetProperty("format", out _))
+            return "string";
+        return null;
+    }
+
+    private static void FlattenJsonElement(JsonElement element, string prefix, Dictionary<string, string> schemaTypes, Dictionary<string, Value> payload)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var prop in element.EnumerateObject())
+                {
+                    var key = string.IsNullOrEmpty(prefix) ? prop.Name : $"{prefix}.{prop.Name}";
+                    FlattenJsonElement(prop.Value, key, schemaTypes, payload);
+                }
+                break;
+
+            case JsonValueKind.Array:
+                var list = new List<Value>();
+                foreach (var item in element.EnumerateArray())
+                {
+                    var converted = ConvertToQdrantValue(item, null);
+                    if (converted != null)
+                        list.Add(converted);
+                }
+                if (list.Count > 0)
+                    payload[prefix] = list.ToArray();
+                break;
+
+            case JsonValueKind.String:
+                payload[prefix] = ConvertStringToTypedValue(element.GetString()!, schemaTypes.GetValueOrDefault(prefix));
+                break;
+
+            case JsonValueKind.Number:
+                if (element.TryGetInt64(out long longVal))
+                    payload[prefix] = longVal;
+                else
+                    payload[prefix] = element.GetDouble();
+                break;
+
+            case JsonValueKind.True:
+                payload[prefix] = true;
+                break;
+
+            case JsonValueKind.False:
+                payload[prefix] = false;
+                break;
+        }
+    }
+
+    private static Value ConvertStringToTypedValue(string value, string? schemaType)
+    {
+        return schemaType switch
+        {
+            "integer" when long.TryParse(value, out var l) => l,
+            "number" when double.TryParse(value, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) => d,
+            "boolean" when bool.TryParse(value, out var b) => b,
+            _ => value
+        };
+    }
+
+    private static Value? ConvertToQdrantValue(JsonElement element, string? schemaType)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => ConvertStringToTypedValue(element.GetString()!, schemaType),
+            JsonValueKind.Number when element.TryGetInt64(out long l) => l,
+            JsonValueKind.Number => element.GetDouble(),
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null
+        };
     }
 }

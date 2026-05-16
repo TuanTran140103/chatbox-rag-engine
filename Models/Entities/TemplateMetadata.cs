@@ -16,6 +16,7 @@ public class TemplateMetadata : BaseEntity, IAuditUser, IAuditDelete
     public required string Name { get; set; }
     public string? Description { get; set; }
     public required string JsonSchema { get; set; }
+    public List<string>? IndexKeys { get; set; }
 
     public List<Dataset>? Datasets { get; set; }
 }

@@ -11,6 +11,17 @@ public class DocumentRepository : GenericRepository<Document>, IDocumentReposito
     {
     }
 
+    public async Task<IEnumerable<Document>> SearchByFileNameInDatasetsAsync(string fileName, IReadOnlyCollection<Guid> datasetIds)
+    {
+        return await _dbSet.AsNoTracking()
+            .Where(d => d.DatasetItem != null && datasetIds.Contains(d.DatasetItem.DatasetId) &&
+                (EF.Functions.TrigramsAreSimilar(d.FileName, fileName) ||
+                 EF.Functions.ILike(d.FileName, $"%{fileName}%")))
+            .OrderBy(d => EF.Functions.TrigramsSimilarityDistance(d.FileName, fileName))
+            .Take(20)
+            .ToListAsync();
+    }
+
     public async Task<IEnumerable<Document>> GetByStatusAsync(StatusDocument status)
     {
         return await _dbSet.AsNoTracking().Where(d => d.Status == status).ToListAsync();
@@ -38,11 +49,11 @@ public class DocumentRepository : GenericRepository<Document>, IDocumentReposito
             .ToListAsync();
     }
 
-    public async Task<IEnumerable<Document>> GetPendingGenQaAsync()
+    public async Task<IEnumerable<Document>> GetPendingIndexingAsync()
     {
         return await _dbSet
             .AsNoTracking()
-            .Where(d => d.Status == StatusDocument.Successed && d.IsOcred && !d.IsQaGenerated)
+            .Where(d => d.Status == StatusDocument.Successed && d.IsOcred && !d.IsIndexed)
             .ToListAsync();
     }
 
@@ -93,7 +104,7 @@ public class DocumentRepository : GenericRepository<Document>, IDocumentReposito
         }
 
         return await query
-            .OrderByDescending(d => d.Status == StatusDocument.ProcessingOcr || d.Status == StatusDocument.ProcessingGenQa)
+            .OrderByDescending(d => d.Status == StatusDocument.ProcessingOcr || d.Status == StatusDocument.ProcessingIndexing)
             .ThenByDescending(d => d.UpdatedAt)
             .ThenByDescending(d => d.Id)
             .Take(pageSize)

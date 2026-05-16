@@ -24,6 +24,8 @@ public class LogMessage : BaseEntity
     public List<LogEvent>? LogsOcr { get; set; }
     [Column(TypeName = "jsonb")]
     public List<LogEvent>? LogsGenQa { get; set; }
+    [Column(TypeName = "jsonb")]
+    public List<LogEvent>? LogsIndexing { get; set; }
     public Guid? DocumentId { get; set; }
     public Document? Document { get; set; }
 }

@@ -21,6 +21,6 @@ public interface IAccessControlService
     Task<DatasetPermissions> GetEffectivePermissionsAsync(Guid userId, Dataset dataset);
     Task<DatasetPermissions> GetEffectivePermissionsAsync(Guid userId, DatasetItem datasetItem);
 
-    Task<List<Guid>> GetAccessibleDatasetIdsAsync(Guid userId);
+    Task<List<Guid>> GetAccessibleDatasetIdsAsync(Guid userId, bool includeDeleted = false);
     Task<List<Guid>> GetAccessibleDocumentIdsAsync(Guid userId);
 }

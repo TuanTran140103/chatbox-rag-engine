@@ -204,7 +204,9 @@ public class MarkdownService : IMarkdownService
                 TokensCount = 0,
                 Type = TypeChunk.Table,
                 TittleHirarchy = hierarchyPath,
-                Title = tableTitle
+                Title = tableTitle,
+                SourceStart = firstBlock.Span.Start,
+                SourceEnd = lastBlock.Span.End
             };
         }).ToList();
 
@@ -232,6 +234,113 @@ public class MarkdownService : IMarkdownService
 
         _logger.LogInformation("CreateChunkTableAsync done: {Count} table chunks", chunks.Count);
         return chunks;
+    }
+
+    /// <inheritdoc/>
+    public async Task<List<ChunkInfo>> MergeAndReindexChunksAsync(
+        string source,
+        List<ChunkInfo> textChunks,
+        List<ChunkInfo> tableChunks,
+        CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("MergeAndReindexChunksAsync: {TextCount} text + {TableCount} table chunks",
+            textChunks.Count, tableChunks.Count);
+
+        if (textChunks.Count == 0 && tableChunks.Count == 0)
+            return new();
+
+        // ── Step 1: Merge text chunks inside table into preceding text chunk ──
+        for (int i = textChunks.Count - 1; i >= 1; i--)
+        {
+            if (!IsInsideAnyTable(textChunks[i], tableChunks)) continue;
+
+            var prev = textChunks[i - 1];
+            prev.Content = prev.Content + Environment.NewLine + textChunks[i].Content;
+            prev.TokensCount += textChunks[i].TokensCount;
+
+            if (prev.TokensCount > _documentProcessOption.MaxChunkSize && !prev.NeedsSummary)
+            {
+                prev.NeedsSummary = true;
+                prev.Type = TypeChunk.Summary;
+                _logger.LogInformation("  Prev text chunk overflow after merge, marked NeedsSummary, tokens={Tokens}", prev.TokensCount);
+            }
+
+            textChunks.RemoveAt(i);
+            _logger.LogInformation("  Merged text chunk inside table into preceding text chunk");
+        }
+
+        // ── Step 1.5: Merge trivial text chunks (only headings) into next chunk ──
+        for (int i = textChunks.Count - 2; i >= 0; i--)
+        {
+            if (!IsTrivialContent(textChunks[i].Content)) continue;
+
+            var next = textChunks[i + 1];
+            next.Content = textChunks[i].Content + Environment.NewLine + next.Content;
+            next.TokensCount += textChunks[i].TokensCount;
+
+            if (next.TokensCount > _documentProcessOption.MaxChunkSize && !next.NeedsSummary)
+            {
+                next.NeedsSummary = true;
+                next.Type = TypeChunk.Summary;
+                _logger.LogInformation("  Trivial text chunk merged into next, overflow, marked NeedsSummary, tokens={Tokens}", next.TokensCount);
+            }
+
+            textChunks.RemoveAt(i);
+            _logger.LogInformation("  Merged trivial text chunk into next chunk");
+        }
+
+        // ── Step 2: Final pass — chỉ text chunk quá maxToken mới thành Summary ──
+        foreach (var chunk in textChunks)
+        {
+            if (chunk.TokensCount > _documentProcessOption.MaxChunkSize && !chunk.NeedsSummary)
+            {
+                chunk.NeedsSummary = true;
+                chunk.Type = TypeChunk.Summary;
+                _logger.LogInformation("  Text chunk tokens={Tokens} > MaxSize, marked NeedsSummary", chunk.TokensCount);
+            }
+        }
+
+        // ── Step 3: Re-index separately per type ──
+        int textIdx = 0;
+        int tableIdx = 0;
+        int summaryIdx = 0;
+
+        foreach (var chunk in textChunks)
+        {
+            switch (chunk.Type)
+            {
+                case TypeChunk.Text:
+                    chunk.Index = ++textIdx;
+                    break;
+                case TypeChunk.Summary:
+                    chunk.Index = ++summaryIdx;
+                    break;
+            }
+        }
+
+        foreach (var chunk in tableChunks)
+            chunk.Index = ++tableIdx;
+
+        // ── Step 4: Combine by source position ──
+        var allChunks = textChunks.Concat(tableChunks)
+            .OrderBy(c => c.SourceStart)
+            .ToList();
+
+        _logger.LogInformation(
+            "MergeAndReindexChunksAsync done: {Total} chunks ({Text} text, {Table} table, {Summary} summary)",
+            allChunks.Count, textIdx, tableIdx, summaryIdx);
+
+        return allChunks;
+    }
+
+    private static bool IsInsideAnyTable(ChunkInfo textChunk, List<ChunkInfo> tableChunks)
+    {
+        foreach (var t in tableChunks)
+        {
+            if (textChunk.SourceStart >= t.SourceStart && textChunk.SourceEnd <= t.SourceEnd)
+                return true;
+        }
+        return false;
     }
 
     private async Task<bool> CallAiFallbackForTableAsync(
@@ -524,7 +633,7 @@ public class MarkdownService : IMarkdownService
     //  Private — chunk splitting (dùng bởi CreateChunkAsync)
     // ─────────────────────────────────────────────────────────────────────────
 
-    private async Task<List<ChunkProcessingContext>> SplitTextByHeaderAsync(string source, int level, Stack<KeyValuePair<int, string>> hierarchy, CancellationToken cancellationToken = default, Guid? workerId = null)
+    private async Task<List<ChunkProcessingContext>> SplitTextByHeaderAsync(string source, int level, Stack<KeyValuePair<int, string>> hierarchy, CancellationToken cancellationToken = default, Guid? workerId = null, int baseOffset = 0)
     {
         if (string.IsNullOrWhiteSpace(source)) return new();
 
@@ -535,6 +644,8 @@ public class MarkdownService : IMarkdownService
                 return new List<ChunkProcessingContext>();
 
             var chunk = CreateChunk(source, tokens, TypeChunk.Text, GetHierarchyPath(hierarchy));
+            chunk.SourceStart = baseOffset;
+            chunk.SourceEnd = baseOffset + source.Length;
             return new List<ChunkProcessingContext>
             {
                 new ChunkProcessingContext
@@ -553,6 +664,8 @@ public class MarkdownService : IMarkdownService
             _logger.LogWarning("Source: {source}", source[..50]);
             var chunk = CreateChunk(source, tokens, TypeChunk.Summary, GetHierarchyPath(hierarchy));
             chunk.NeedsSummary = true;
+            chunk.SourceStart = baseOffset;
+            chunk.SourceEnd = baseOffset + source.Length;
             return new List<ChunkProcessingContext>
             {
                 new ChunkProcessingContext
@@ -567,11 +680,13 @@ public class MarkdownService : IMarkdownService
         var blocks = MarkdownServiceHelper.GetAllBlock(source, _pipeline);
         var headers = blocks.OfType<HeadingBlock>().Where(h => h.Level == level).ToList();
 
-        if (!headers.Any()) return await SplitTextByHeaderAsync(source, level + 1, hierarchy, cancellationToken, workerId);
+        if (!headers.Any()) return await SplitTextByHeaderAsync(source, level + 1, hierarchy, cancellationToken, workerId, baseOffset);
 
         var result = new List<ChunkProcessingContext>();
         var lastPos = 0;
         string? pendingHeaders = null;
+        int? pendingHeadersSourceStart = null;
+        int? pendingHeadersSourceEnd = null;
 
         for (int i = 0; i < headers.Count; i++)
         {
@@ -580,29 +695,39 @@ public class MarkdownService : IMarkdownService
 
             var subContent = source.Substring(lastPos, currentHeader.Span.Start - lastPos);
             if (!string.IsNullOrWhiteSpace(subContent))
-                result.AddRange(await SplitTextByHeaderAsync(subContent, level + 1, CloneStack(hierarchy), cancellationToken, workerId));
+                result.AddRange(await SplitTextByHeaderAsync(subContent, level + 1, CloneStack(hierarchy), cancellationToken, workerId, baseOffset + lastPos));
 
             var headerTitle = source.Substring(currentHeader.Span.Start, currentHeader.Span.Length);
             var headerContent = source.Substring(currentHeader.Span.Start, nextHeaderStart - currentHeader.Span.Start);
 
             UpdateHierarchyStack(hierarchy, new KeyValuePair<int, string>(level, headerTitle));
-            var headerChunks = await SplitTextByHeaderAsync(headerContent, level + 1, CloneStack(hierarchy), cancellationToken, workerId);
+            var headerChunks = await SplitTextByHeaderAsync(headerContent, level + 1, CloneStack(hierarchy), cancellationToken, workerId, baseOffset + currentHeader.Span.Start);
 
             if (headerChunks.Count == 0)
             {
+                int hStart = baseOffset + currentHeader.Span.Start;
+                int hEnd = baseOffset + currentHeader.Span.Start + currentHeader.Span.Length;
+                if (pendingHeaders == null)
+                {
+                    pendingHeadersSourceStart = hStart;
+                }
+                pendingHeadersSourceEnd = hEnd;
                 pendingHeaders = pendingHeaders != null
-                    ? pendingHeaders + "\n" + headerTitle
+                    ? pendingHeaders + Environment.NewLine + headerTitle
                     : headerTitle;
             }
             else
             {
                 if (pendingHeaders != null)
                 {
-                    var merged = pendingHeaders + "\n" + headerChunks[0].RawContent;
+                    var merged = pendingHeaders + Environment.NewLine + headerChunks[0].RawContent;
                     headerChunks[0].RawContent = merged;
                     headerChunks[0].Chunk.Content = merged;
                     headerChunks[0].Chunk.TokensCount = (await _tokenCountService.CountAsync(new() { Text = merged }, cancellationToken)).TokenCount;
+                    headerChunks[0].Chunk.SourceStart = pendingHeadersSourceStart!.Value;
                     pendingHeaders = null;
+                    pendingHeadersSourceStart = null;
+                    pendingHeadersSourceEnd = null;
                 }
                 result.AddRange(headerChunks);
             }
@@ -613,10 +738,14 @@ public class MarkdownService : IMarkdownService
         if (pendingHeaders != null && result.Count > 0)
         {
             var last = result[^1];
-            var merged = pendingHeaders + "\n" + last.RawContent;
+            var merged = pendingHeaders + Environment.NewLine + last.RawContent;
             last.RawContent = merged;
             last.Chunk.Content = merged;
             last.Chunk.TokensCount = (await _tokenCountService.CountAsync(new() { Text = merged }, cancellationToken)).TokenCount;
+            if (pendingHeadersSourceEnd.HasValue)
+            {
+                last.Chunk.SourceEnd = pendingHeadersSourceEnd.Value;
+            }
         }
 
         return result;

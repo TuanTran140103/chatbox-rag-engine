@@ -47,4 +47,19 @@ public interface IMarkdownService
     /// Used for step 1b (QA summary) where only top-level splits are needed.
     /// </summary>
     Task<List<SummaryChunk>> SplitDocumentTopLevelAsync(string source, int maxTokensPerChunk, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Merge text chunks that are contained within table chunks (based on source position),
+    /// then re-index each chunk type separately. Finally sort by source position.
+    /// </summary>
+    /// <param name="source">Original markdown source</param>
+    /// <param name="textChunks">Text chunks from CreateChunkAsync</param>
+    /// <param name="tableChunks">Table chunks from CreateChunkTableAsync</param>
+    /// <param name="cancellationToken"></param>
+    /// <returns>Merged and re-indexed chunk list</returns>
+    Task<List<ChunkInfo>> MergeAndReindexChunksAsync(
+        string source,
+        List<ChunkInfo> textChunks,
+        List<ChunkInfo> tableChunks,
+        CancellationToken cancellationToken = default);
 }

@@ -11,4 +11,6 @@ public class UpdateTemplateMetadataRequestDto
     public string? Description { get; set; }
 
     public string? JsonSchema { get; set; }
+
+    public List<string>? IndexKeys { get; set; }
 }

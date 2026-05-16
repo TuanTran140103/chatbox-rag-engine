@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authentication;
@@ -115,7 +116,7 @@ public class AuthController : ControllerBase
         return Ok(new
         {
             user = User.Identity?.Name,
-            email = User.Claims.FirstOrDefault(c => c.Type == System.Security.Claims.ClaimTypes.Email)?.Value,
+            email = User.Claims.FirstOrDefault(c => c.Type == ClaimTypes.Email)?.Value,
             isAuthenticated = User.Identity?.IsAuthenticated,
             roles = User.Claims
                 .Where(c => c.Type == System.Security.Claims.ClaimTypes.Role)
@@ -130,5 +131,23 @@ public class AuthController : ControllerBase
     {
         var frontendBaseUrl = _authOptions.FrontendBaseUrl.TrimEnd('/');
         return Redirect($"{frontendBaseUrl}/login");
+    }
+
+    /// <summary>
+    /// For Nginx auth_request validation. Returns 200 if valid cookie, 401 if not.
+    /// Sets X-User-Id response header for Nginx to forward to downstream services.
+    /// </summary>
+    [HttpGet("validate")]
+    [AllowAnonymous]
+    public IActionResult Validate()
+    {
+        if (User.Identity?.IsAuthenticated != true)
+            return Unauthorized();
+
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!string.IsNullOrEmpty(userId))
+            Response.Headers["X-User-Id"] = userId;
+
+        return Ok();
     }
 }

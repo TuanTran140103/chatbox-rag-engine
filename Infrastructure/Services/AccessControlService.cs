@@ -178,12 +178,15 @@ public class AccessControlService : IAccessControlService
         return perms.HasFlag(DatasetPermissions.Update);
     }
 
-    public async Task<List<Guid>> GetAccessibleDatasetIdsAsync(Guid userId)
+    public async Task<List<Guid>> GetAccessibleDatasetIdsAsync(Guid userId, bool includeDeleted = false)
     {
         var isAdmin = await IsAdminAsync(userId);
         if (isAdmin)
         {
-            return await _context.Datasets.Select(d => d.Id).ToListAsync();
+            var query = includeDeleted
+                ? _context.Datasets.IgnoreQueryFilters()
+                : _context.Datasets.AsQueryable();
+            return await query.Select(d => d.Id).ToListAsync();
         }
 
         var myOUIds = await _context.UserPositions
@@ -191,12 +194,16 @@ public class AccessControlService : IAccessControlService
             .Select(up => up.OUId)
             .ToListAsync();
 
-        var ownedByMe = await _context.Datasets
+        IQueryable<Dataset> datasetsQuery = includeDeleted
+            ? _context.Datasets.IgnoreQueryFilters()
+            : _context.Datasets.AsQueryable();
+
+        var ownedByMe = await datasetsQuery
             .Where(d => d.OwnerUserId == userId)
             .Select(d => d.Id)
             .ToListAsync();
 
-        var publicInMyOUs = await _context.Datasets
+        var publicInMyOUs = await datasetsQuery
             .Where(d => d.OUId.HasValue && myOUIds.Contains(d.OUId.Value) && d.IsPublicToUnit)
             .Select(d => d.Id)
             .ToListAsync();
@@ -206,7 +213,7 @@ public class AccessControlService : IAccessControlService
             .Select(up => up.OUId)
             .ToListAsync();
 
-        var managedDatasets = await _context.Datasets
+        var managedDatasets = await datasetsQuery
             .Where(d => d.OUId.HasValue && managerOfOUs.Contains(d.OUId.Value))
             .Select(d => d.Id)
             .ToListAsync();

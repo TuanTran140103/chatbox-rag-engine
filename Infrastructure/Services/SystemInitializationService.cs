@@ -1,3 +1,4 @@
+using MarkdownGenQAs.Application.Interfaces.ExternalServices;
 using MarkdownGenQAs.Application.Interfaces.Services;
 using MarkdownGenQAs.Application.Service;
 using MarkdownGenQAs.Models.Constants;
@@ -8,6 +9,7 @@ using MarkdownGenQAs.Utils;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Qdrant.Client.Grpc;
 
 namespace MarkdownGenQAs.Infrastructure.Services;
 
@@ -30,6 +32,20 @@ public class SystemInitializationService : IHostedService
         _initialSettings = initialSettings.Value;
     }
 
+    private Distance ParseDistance(string? distance) => distance switch
+    {
+        "Euclid" => Distance.Euclid,
+        "Dot" => Distance.Dot,
+        _ => Distance.Cosine
+    };
+
+    private ShardingMethod? ParseShardingMethod(string? method) => method switch
+    {
+        "Custom" => ShardingMethod.Custom,
+        "Auto" => ShardingMethod.Auto,
+        _ => null
+    };
+
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("[SystemInitialization] Starting system initialization on app startup...");
@@ -40,54 +56,58 @@ public class SystemInitializationService : IHostedService
             {
                 var context = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
 
-                // 0. Ensure database schema exists (for dev - creates all tables if not exist)
-                var canConnect = await context.Database.CanConnectAsync();
-                if (!canConnect)
-                {
-                    _logger.LogError("[SystemInitialization] Cannot connect to database. Please ensure PostgreSQL is running.");
-                    return;
-                }
-
-                await context.Database.EnsureCreatedAsync();
-                _logger.LogInformation("[SystemInitialization] Database schema ensured.");
+                // 0. Apply pending migrations (auto-creates database if not exists)
+                await context.Database.MigrateAsync(cancellationToken);
+                _logger.LogInformation("[SystemInitialization] Database migrations applied.");
 
                 // 1. Cleanup Redis
                 var concurrencyService = scope.ServiceProvider.GetRequiredService<IConcurrencyService>();
                 await concurrencyService.ClearAllModelsAsync();
                 await concurrencyService.ClearAllStreamsAsync();
                 _logger.LogInformation("[SystemInitialization] Cleanup successful.");
-
-                // 2. GenQA Job Recovery - Recover jobs stuck in ProcessingGenQa after app crash
-                try
-                {
-                    var documentService = scope.ServiceProvider.GetRequiredService<DocumentService>();
-                    var recoveryResult = await documentService.RecoverStuckGenQAJobsAsync();
-
-                    if (recoveryResult.IsSuccess)
-                    {
-                        _logger.LogInformation("GenQA recovery completed. Processed {Count} documents.", recoveryResult.Data);
-                    }
-                    else
-                    {
-                        _logger.LogWarning("GenQA recovery issue: {Message}", recoveryResult.ErrorMessage);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error during GenQA job recovery.");
-                }
-
-                // 3. Seed Data ---> in dev then run once and comment
-                // await SeedRolesAsync(scope);
-                // var rootOu = await SeedRootOrganizationUnitAsync(scope);
-                // await SeedAdminUserAsync(scope, rootOu);
-
-                // _logger.LogInformation("[SystemInitialization] System initialization completed successfully.");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[SystemInitialization] Error during system initialization.");
+                _logger.LogError(ex, "[SystemInitialization] Fatal error during initialization.");
+                throw;
             }
+
+            // 2. Initialize Qdrant collections — FATAL: app không thể hoạt động nếu Qdrant down
+            await InitializeQdrantCollectionsAsync(scope);
+
+            // 3. Indexing Job Recovery — non-fatal: chỉ log lỗi, app vẫn chạy
+            try
+            {
+                var documentService = scope.ServiceProvider.GetRequiredService<DocumentService>();
+                var recoveryResult = await documentService.RecoverStuckIndexingJobsAsync();
+
+                if (recoveryResult.IsSuccess)
+                {
+                    _logger.LogInformation("Indexing recovery completed. Processed {Count} documents.", recoveryResult.Data);
+                }
+                else
+                {
+                    _logger.LogWarning("Indexing recovery issue: {Message}", recoveryResult.ErrorMessage);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during Indexing job recovery.");
+            }
+
+            // 4. Seed Data — non-fatal
+            try
+            {
+                await SeedRolesAsync(scope);
+                var rootOu = await SeedRootOrganizationUnitAsync(scope);
+                await SeedAdminUserAsync(scope, rootOu);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[SystemInitialization] Error during seed data.");
+            }
+
+            _logger.LogInformation("[SystemInitialization] System initialization completed successfully.");
         }
     }
 
@@ -170,6 +190,56 @@ public class SystemInitializationService : IHostedService
                 var errors = string.Join(", ", result.Errors.Select(e => e.Description));
                 _logger.LogError("Failed to seed admin user: {Errors}", errors);
             }
+        }
+    }
+
+    private async Task InitializeQdrantCollectionsAsync(IServiceScope scope)
+    {
+        var qdrantService = scope.ServiceProvider.GetRequiredService<IQdrantService>();
+        var qdrantOptions = scope.ServiceProvider.GetRequiredService<IOptions<QdrantOptions>>().Value;
+
+        var collectionName = "documents";
+
+        if (!await qdrantService.CollectionExistsAsync(collectionName))
+        {
+            var distance = ParseDistance(qdrantOptions.Embedding.Distance);
+            var shardingMethod = ParseShardingMethod(qdrantOptions.DefaultCollection.ShardingMethod);
+
+            await qdrantService.CreateCollectionAsync(
+                collectionName,
+                new VectorParams
+                {
+                    Size = (ulong)qdrantOptions.Embedding.Dimension,
+                    Distance = distance
+                },
+                shardNumber: qdrantOptions.DefaultCollection.ShardNumber,
+                replicationFactor: qdrantOptions.DefaultCollection.ReplicationFactor,
+                writeConsistencyFactor: qdrantOptions.DefaultCollection.WriteConsistencyFactor,
+                onDiskPayload: qdrantOptions.DefaultCollection.OnDiskPayload,
+                shardingMethod: shardingMethod);
+
+            _logger.LogInformation(
+                "[Qdrant] Collection '{CollectionName}' created: dim={Dimension}, distance={Distance}, shards={Shards}, sharding={ShardingMethod}",
+                collectionName,
+                qdrantOptions.Embedding.Dimension,
+                distance,
+                qdrantOptions.DefaultCollection.ShardNumber,
+                qdrantOptions.DefaultCollection.ShardingMethod ?? "default");
+        }
+        else
+        {
+            _logger.LogInformation("[Qdrant] Collection '{CollectionName}' already exists.", collectionName);
+        }
+
+        // Create indexes for common filter fields
+        try
+        {
+            await qdrantService.CreatePayloadIndexAsync(collectionName, "documentId", PayloadSchemaType.Keyword);
+            _logger.LogInformation("[Qdrant] Payload index for 'documentId' created.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[Qdrant] Failed to create payload index for 'documentId' (may already exist)");
         }
     }
 

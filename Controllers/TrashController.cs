@@ -56,7 +56,7 @@ public class TrashController : ControllerBase
         return Ok();
     }
 
-    private static TrashItemType ParseType(string type) => type switch
+    private static TrashItemType ParseType(string type) => type.ToLowerInvariant() switch
     {
         "organization-unit" => TrashItemType.OrganizationUnit,
         "dataset" => TrashItemType.Dataset,

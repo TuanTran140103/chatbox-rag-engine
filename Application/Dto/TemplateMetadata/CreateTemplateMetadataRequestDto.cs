@@ -13,4 +13,6 @@ public class CreateTemplateMetadataRequestDto
 
     [Required]
     public required string JsonSchema { get; set; }
+
+    public List<string>? IndexKeys { get; set; }
 }

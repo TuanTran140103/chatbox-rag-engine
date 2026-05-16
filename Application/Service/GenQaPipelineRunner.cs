@@ -56,38 +56,62 @@ public class GenQaPipelineRunner
         await RunGenQAPipelineAsync(document, ct);
     }
 
+    public async Task RunChunkAndSummaryOnlyAsync(Guid documentId, CancellationToken ct)
+    {
+        var document = await _uow.Documents.GetByIdAsync(documentId);
+        if (document == null)
+        {
+            _logger.LogWarning("Document not found for pipeline: {Id}", documentId);
+            return;
+        }
+
+        await RunChunkAndSummaryOnlyPipelineAsync(document, ct);
+    }
+
     private async Task RunGenQAPipelineAsync(Document document, CancellationToken ct)
     {
         var markdownContent = document.OcrContent!;
 
         var summary = await RunPhase1Async(document, markdownContent, ct);
 
-        var allChunksRawjson = document.QaContent;
-        var allChunks = new List<ChunkInfo>();
-        if (!string.IsNullOrEmpty(allChunksRawjson))
+        var cachedJson = document.QaContent;
+        if (!string.IsNullOrEmpty(cachedJson))
         {
-            _logger.LogInformation("[STEP 3] Using cached QAs for file {Id}", document.Id);
-            await AddLogAndBroadcastAsync(document.Id, $"[STEP 3] Using cached QAs for file {document.Id}");
-            allChunks = JsonSerializer.Deserialize<List<ChunkInfo>>(allChunksRawjson);
+            _logger.LogInformation("[STEP 3] Using cached chunks for file {Id}", document.Id);
+            await AddLogAndBroadcastAsync(document.Id, $"[STEP 3] Using cached chunks for {document.FileName}");
+            var cachedQAInfors = JsonSerializer.Deserialize<List<ChunkQAInfor>>(cachedJson) ?? new();
+            var cachedChunks = cachedQAInfors.Select(q => q.ChunkInfo).ToList();
+            var regenerated = await RunPhase2Async(document, summary, cachedChunks, ct);
+            await RunSaveResultsAsync(document, summary, regenerated);
+            return;
         }
 
-        var chunkingTask = RunChunkingAsync(document, markdownContent, ct);
+        var textChunks = await RunChunkingAsync(document, markdownContent, ct);
+
         var tableChunkingTask = RunTableChunkingAsync(document, markdownContent, ct);
-
-        await Task.WhenAll(chunkingTask, tableChunkingTask);
-
-        var textChunks = await chunkingTask;
-        var tableChunks = await tableChunkingTask;
-        allChunks = textChunks.Concat(tableChunks).ToList();
-
-        var phase2Task = RunPhase2Async(document, summary, allChunks, ct);
         var summaryChunksTask = SummarizeLargeChunksAsync(document, textChunks, ct);
 
-        await Task.WhenAll(phase2Task, summaryChunksTask);
+        await Task.WhenAll(tableChunkingTask, summaryChunksTask);
 
-        var chunkQAInfors = await phase2Task;
+        var tableChunks = await tableChunkingTask;
+        var chunks = textChunks.Concat(tableChunks).ToList();
 
-        await RunSaveResultsAsync(document, summary, chunkQAInfors);
+        var phase2Results = await RunPhase2Async(document, summary, chunks, ct);
+        await RunSaveResultsAsync(document, summary, phase2Results);
+    }
+
+    private async Task RunChunkAndSummaryOnlyPipelineAsync(Document document, CancellationToken ct)
+    {
+        var markdownContent = document.OcrContent!;
+        var summary = await RunPhase1Async(document, markdownContent, ct);
+
+        var textChunks = await RunChunkingAsync(document, markdownContent, ct);
+        var tableChunkingTask = RunTableChunkingAsync(document, markdownContent, ct);
+        var summaryChunksTask = SummarizeLargeChunksAsync(document, textChunks, ct);
+
+        await Task.WhenAll(tableChunkingTask, summaryChunksTask);
+
+        await RunSaveSummaryOnlyAsync(document, summary);
     }
 
     private async Task<string> RunPhase1Async(
@@ -298,6 +322,20 @@ public class GenQaPipelineRunner
 
         string qaJson = JsonSerializer.Serialize(results);
         document.QaContent = qaJson;
+        document.SummaryContent = summary;
+        _uow.Documents.Update(document);
+        await _uow.SaveChangesAsync();
+
+        _logger.LogInformation("[STEP 4] Saving completed in {0:00}s", sw.Elapsed.TotalSeconds);
+        sw.Stop();
+        await AddLogAndBroadcastAsync(document.Id, $"[STEP 4] Saving completed in {sw.Elapsed.TotalSeconds:0.00}s", processingTime: sw.Elapsed.TotalSeconds);
+    }
+
+    private async Task RunSaveSummaryOnlyAsync(Document document, string summary)
+    {
+        var sw = Stopwatch.StartNew();
+        await AddLogAndBroadcastAsync(document.Id, $"[STEP 4] Saving results to DB: {document.FileName}");
+
         document.SummaryContent = summary;
         _uow.Documents.Update(document);
         await _uow.SaveChangesAsync();
