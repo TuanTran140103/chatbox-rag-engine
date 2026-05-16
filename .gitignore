@@ -19,3 +19,5 @@ data/cache
 uploads/
 
 data/tests
+
+qdrant-dotnet
