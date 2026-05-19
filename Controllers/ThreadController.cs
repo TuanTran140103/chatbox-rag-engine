@@ -38,6 +38,7 @@ public class ThreadController : ControllerBase
             .Select(t => new ThreadListDto
             {
                 Id = t.Id,
+                ThreadId = t.ThreadId,
                 UserId = t.UserId,
                 Title = t.Title,
                 CreatedAt = t.CreatedAt,
@@ -56,6 +57,7 @@ public class ThreadController : ControllerBase
             .Select(t => new ThreadDetailDto
             {
                 Id = t.Id,
+                ThreadId = t.ThreadId,
                 UserId = t.UserId,
                 Title = t.Title,
                 CreatedAt = t.CreatedAt,
@@ -76,6 +78,7 @@ public class ThreadController : ControllerBase
 
         var thread = new Models.Entities.ConversationThread
         {
+            ThreadId = dto.ThreadId,
             UserId = userId,
             Title = dto.Title
         };
@@ -86,6 +89,7 @@ public class ThreadController : ControllerBase
         return CreatedAtAction(nameof(GetById), new { id = thread.Id }, new ThreadDetailDto
         {
             Id = thread.Id,
+            ThreadId = thread.ThreadId,
             UserId = thread.UserId,
             Title = thread.Title,
             CreatedAt = thread.CreatedAt,
@@ -107,6 +111,7 @@ public class ThreadController : ControllerBase
         return Ok(new ThreadDetailDto
         {
             Id = thread.Id,
+            ThreadId = thread.ThreadId,
             UserId = thread.UserId,
             Title = thread.Title,
             CreatedAt = thread.CreatedAt,

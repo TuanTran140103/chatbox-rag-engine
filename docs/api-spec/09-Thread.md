@@ -4,7 +4,7 @@ Base URL: `/api/v1/threads`
 
 Tất cả API trong nhóm này yêu cầu **đăng nhập** (`[Authorize]`), không yêu cầu Admin.
 
-Thread dùng để quản lý các phiên hội thoại/hỏi đáp, hỗ trợ soft delete và tìm kiếm theo tiêu đề.
+Thread dùng để quản lý các phiên hội thoại/hỏi đáp từ service ngoài (ví dụ: OpenAI, Claude), hỗ trợ soft delete và tìm kiếm theo tiêu đề. `threadId` là ID từ service ngoài do client truyền lên.
 
 ---
 
@@ -29,6 +29,7 @@ GET /api/v1/threads?id={guid}&title={string}
 [
   {
     "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "threadId": "thread_abc123xyz",
     "userId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
     "title": "Hỏi về báo cáo tài chính Q1",
     "createdAt": "2025-01-15T10:30:00Z",
@@ -41,7 +42,8 @@ GET /api/v1/threads?id={guid}&title={string}
 
 | Field | Type | Description |
 |-------|------|-------------|
-| id | guid | ID thread |
+| id | guid | ID thread (PK local) |
+| threadId | string | ID từ service ngoài (ví dụ: OpenAI thread ID) |
 | userId | guid | ID người tạo |
 | title | string | Tiêu đề thread |
 | createdAt | datetime | Thời gian tạo |
@@ -62,6 +64,7 @@ GET /api/v1/threads/{id:guid}
 ```json
 {
   "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "threadId": "thread_abc123xyz",
   "userId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
   "title": "Hỏi về báo cáo tài chính Q1",
   "createdAt": "2025-01-15T10:30:00Z",
@@ -81,7 +84,7 @@ GET /api/v1/threads/{id:guid}
 
 ## 3. Create Thread
 
-Tạo thread mới, tự động gán `userId` từ user đang đăng nhập.
+Tạo thread mới với `threadId` từ service ngoài, tự động gán `userId` từ user đang đăng nhập.
 
 ```
 POST /api/v1/threads
@@ -91,12 +94,14 @@ POST /api/v1/threads
 
 ```json
 {
+  "threadId": "thread_abc123xyz",
   "title": "Hỏi về báo cáo tài chính Q1"
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| threadId | string | Yes | ID từ service ngoài (ví dụ: OpenAI thread ID) |
 | title | string | Yes | Tiêu đề thread |
 
 ### Response (201)
@@ -104,6 +109,7 @@ POST /api/v1/threads
 ```json
 {
   "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "threadId": "thread_abc123xyz",
   "userId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
   "title": "Hỏi về báo cáo tài chính Q1",
   "createdAt": "2025-01-15T10:30:00Z",
@@ -142,6 +148,7 @@ PUT /api/v1/threads/{id:guid}
 ```json
 {
   "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "threadId": "thread_abc123xyz",
   "userId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
   "title": "Hỏi về báo cáo tài chính Q1 (đã chỉnh sửa)",
   "createdAt": "2025-01-15T10:30:00Z",

@@ -353,6 +353,7 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
         {
             entity.ToTable("Threads");
             entity.HasKey(e => e.Id);
+            entity.Property(e => e.ThreadId).IsRequired().HasMaxLength(200);
             entity.Property(e => e.Title).IsRequired().HasMaxLength(500);
 
             entity.HasOne(e => e.User)
@@ -361,6 +362,7 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
                   .OnDelete(DeleteBehavior.Cascade);
 
             entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => e.ThreadId).IsUnique();
             entity.HasIndex(e => e.Title)
                   .HasMethod("gin")
                   .HasOperators("gin_trgm_ops");

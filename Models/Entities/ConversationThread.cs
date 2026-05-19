@@ -7,6 +7,7 @@ public class ConversationThread : BaseEntity, IAuditDelete
     public Guid UserId { get; set; }
     public ApplicationUser? User { get; set; }
 
+    public required string ThreadId { get; set; }
     public required string Title { get; set; }
 
     // IAuditDelete
