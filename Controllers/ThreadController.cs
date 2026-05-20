@@ -24,7 +24,7 @@ public class ThreadController : ControllerBase
         [FromQuery] Guid? id,
         [FromQuery] string? title)
     {
-        var query = _context.Threads.AsQueryable();
+        var query = _context.Threads.Where(t => !t.IsDeleted);
 
         if (id.HasValue)
             query = query.Where(t => t.Id == id.Value);
@@ -53,7 +53,7 @@ public class ThreadController : ControllerBase
     public async Task<ActionResult<ThreadDetailDto>> GetById(Guid id)
     {
         var thread = await _context.Threads
-            .Where(t => t.Id == id)
+            .Where(t => !t.IsDeleted && t.Id == id)
             .Select(t => new ThreadDetailDto
             {
                 Id = t.Id,
@@ -100,7 +100,7 @@ public class ThreadController : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateThreadRequestDto dto)
     {
-        var thread = await _context.Threads.FirstOrDefaultAsync(t => t.Id == id);
+        var thread = await _context.Threads.FirstOrDefaultAsync(t => !t.IsDeleted && t.Id == id);
 
         if (thread == null)
             return NotFound(new { error = "Thread not found" });
@@ -122,13 +122,12 @@ public class ThreadController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id)
     {
-        var thread = await _context.Threads.FirstOrDefaultAsync(t => t.Id == id);
+        var thread = await _context.Threads.FirstOrDefaultAsync(t => !t.IsDeleted && t.Id == id);
 
         if (thread == null)
             return NotFound(new { error = "Thread not found" });
 
-        thread.IsDeleted = true;
-        thread.DeletedAt = DateTime.UtcNow;
+        _context.Threads.Remove(thread);
         await _context.SaveChangesAsync();
 
         return NoContent();
