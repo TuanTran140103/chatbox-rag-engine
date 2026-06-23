@@ -10,4 +10,10 @@ public interface IS3Service
     Task<bool> FileExistsAsync(string objectKey, string bucketName);
     Task<bool> DeleteFileAsync(string objectKey, string bucketName);
     Task<bool> DeleteMultipleFilesAsync(IEnumerable<(string ObjectKey, string BucketName)> files);
+
+    Task<string> GeneratePresignedUploadUrlAsync(string objectKey, string bucketName, string contentType, TimeSpan expiration);
+    Task<string> GeneratePresignedDownloadUrlAsync(string objectKey, string bucketName, TimeSpan expiration);
+
+    Task<(long ContentLength, string? ContentType)> GetFileMetadataAsync(string objectKey, string bucketName);
+    Task<byte[]> ReadFileHeadAsync(string objectKey, string bucketName, int byteCount);
 }

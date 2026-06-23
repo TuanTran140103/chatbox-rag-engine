@@ -1,12 +1,12 @@
 # Dataset API
 
-Base URL: `/api/v1/user/me/datasets`
+Base URL: `/api/v1/datasets`
 
-Tất cả API trong nhóm này đều thao tác trên dữ liệu của **user hiện tại** (xác thực qua Cookie, không cần truyền userId).
+Tất cả API trong nhóm này đều thao tác trên dữ liệu của **user hiện tại** (xác thực qua Kong proxy headers, không cần truyền userId).
 
 Yêu cầu **đăng nhập** (`[Authorize]`), không yêu cầu Admin.
 
-Các API này cho phép user thao tác với dataset mà họ có quyền truy cập (sở hữu, được share, hoặc dataset public trong OU).
+Các API này cho phép user thao tác với dataset mà họ có quyền truy cập (sở hữu, được share, hoặc dataset trong Department họ là Manager).
 
 ---
 
@@ -31,11 +31,10 @@ EffectiveMask = Default Permissions | Shared Permissions
 ```
 
 **Default Permissions:**
-- Owner: FullControl (15)
-- Manager của OU mà dataset thuộc về: FullControl (15)
-- User cùng OU + dataset.IsPublicToUnit=true: Read (1)
+- **Owner** của Dataset: FullControl (15)
+- **Manager** của Department mà Dataset thuộc về: Read (1)
 
-**Shared Permissions:** Từ AccessShares, ưu tiên quyền cao nhất nếu trùng lặp.
+**Shared Permissions:** Từ AccessShares (ShareToUserId hoặc ShareToDepartmentId), ưu tiên quyền cao nhất nếu trùng lặp.
 
 ### Security Policy
 
@@ -48,7 +47,7 @@ EffectiveMask = Default Permissions | Shared Permissions
 Liệt kê tất cả dataset mà user hiện tại có quyền truy cập, phân trang dạng offset.
 
 ```
-GET /api/v1/user/me/datasets?page=1&pageSize=20
+GET /api/v1/datasets?page=1&pageSize=20
 ```
 
 ### Query Parameters
@@ -66,11 +65,9 @@ GET /api/v1/user/me/datasets?page=1&pageSize=20
     {
       "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
       "name": "Hợp đồng 2025",
-      "ouName": "Phòng IT",
-      "ouId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
+      "description": "Tổng hợp hợp đồng năm 2025",
       "itemCount": 15,
       "documentCount": 12,
-      "isPublicToUnit": true,
       "templateMetadataId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
       "templateMetadataName": "Báo cáo template",
       "createdAt": "2025-01-01T00:00:00Z",
@@ -91,11 +88,9 @@ GET /api/v1/user/me/datasets?page=1&pageSize=20
 | items | array | Danh sách datasets |
 | items[].id | guid | ID dataset |
 | items[].name | string | Tên dataset |
-| items[].ouName | string? | Tên OU mà dataset thuộc về |
-| items[].ouId | guid? | ID OU |
+| items[].description | string? | Mô tả dataset |
 | items[].itemCount | int | Tổng số items (folders + documents) |
 | items[].documentCount | int | Số documents trong dataset |
-| items[].isPublicToUnit | bool | Dataset có public cho OU không |
 | items[].templateMetadataId | guid? | Template metadata ID (nếu có) |
 | items[].templateMetadataName | string? | Tên template metadata (nếu có) |
 | items[].createdAt | datetime | Thời gian tạo |
@@ -107,17 +102,17 @@ GET /api/v1/user/me/datasets?page=1&pageSize=20
 
 ### Behaviour
 
-- Kết quả bao gồm: dataset user sở hữu, dataset được share, dataset public trong OU user thuộc về, dataset trong OU user là manager
+- Kết quả bao gồm: dataset user sở hữu, dataset được share, dataset trong Department user là Manager
 - Sort: `UpdatedAt DESC` — dataset mới cập nhật lên đầu
 
 ---
 
 ## 2. Get Dataset Detail
 
-Lấy thông tin chi tiết một dataset.
+Lấy thông tin chi tiết một dataset (cấu trúc giống List, chỉ khác là single item).
 
 ```
-GET /api/v1/user/me/datasets/{id:guid}
+GET /api/v1/datasets/{id:guid}
 ```
 
 ### Response (200)
@@ -127,12 +122,8 @@ GET /api/v1/user/me/datasets/{id:guid}
   "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "name": "Hợp đồng 2025",
   "description": "Tổng hợp hợp đồng năm 2025",
-  "ownerName": "Nguyễn Văn A",
-  "ouName": "Phòng IT",
-  "ouId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
   "itemCount": 15,
   "documentCount": 12,
-  "isPublicToUnit": true,
   "templateMetadataId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
   "templateMetadataName": "Báo cáo template",
   "createdAt": "2025-01-01T00:00:00Z",
@@ -155,7 +146,7 @@ GET /api/v1/user/me/datasets/{id:guid}
 Tạo một dataset mới.
 
 ```
-POST /api/v1/user/me/datasets
+POST /api/v1/datasets
 ```
 
 ### Request Body
@@ -164,8 +155,7 @@ POST /api/v1/user/me/datasets
 {
   "name": "Hợp đồng 2025",
   "description": "Tổng hợp hợp đồng năm 2025",
-  "ouId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
-  "isPublicToUnit": false,
+  "departmentId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
   "templateMetadataId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
@@ -176,21 +166,20 @@ POST /api/v1/user/me/datasets
 |-------|------|----------|-------------|
 | name | string | Có | Tên dataset (max 255 ký tự) |
 | description | string? | Không | Mô tả (max 1000 ký tự) |
-| ouId | guid? | Không | OU mà dataset thuộc về. Nếu không cung cấp, dataset là personal |
-| isPublicToUnit | bool | Không | Mặc định `false`. Nếu `true`, tất cả member của OU đều có quyền Read |
+| departmentId | guid? | Không | Department mà dataset thuộc về. Nếu không cung cấp, dataset là personal. Manager của department có quyền Read |
 | templateMetadataId | guid | Có | Template metadata để định nghĩa schema cho metadata extraction |
 
 ### Validation
 
 - `name` không được rỗng hoặc chỉ whitespace
 - `name` tối đa 255 ký tự
-- Nếu `ouId` được cung cấp, user phải thuộc OU đó (Staff hoặc Manager)
+- Nếu `departmentId` được cung cấp, user phải thuộc department đó (Staff hoặc Manager)
 - `templateMetadataId` là bắt buộc, template phải tồn tại
 - Owner được tự động set = user hiện tại
 
 ### Response (201 Created)
 
-Trả về `DatasetDetailDto` (cấu trúc giống GET detail).
+Trả về `DatasetDto` (cấu trúc giống GET detail).
 
 ### Response (400)
 
@@ -204,10 +193,10 @@ Trả về `DatasetDetailDto` (cấu trúc giống GET detail).
 
 ## 4. Update Dataset
 
-Cập nhật thông tin dataset. Chỉ owner, manager của OU, hoặc user được share quyền Update mới có thể cập nhật.
+Cập nhật thông tin dataset. Chỉ owner hoặc user được share quyền Update mới có thể cập nhật. (Manager của Department chỉ có Read, không có Update)
 
 ```
-PUT /api/v1/user/me/datasets/{id:guid}
+PUT /api/v1/datasets/{id:guid}
 ```
 
 ### Request Body
@@ -215,9 +204,7 @@ PUT /api/v1/user/me/datasets/{id:guid}
 ```json
 {
   "name": "Hợp đồng 2025 - Updated",
-  "description": "Mô tả mới",
-  "isPublicToUnit": true,
-  "templateMetadataId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+  "description": "Mô tả mới"
 }
 ```
 
@@ -227,17 +214,15 @@ PUT /api/v1/user/me/datasets/{id:guid}
 |-------|------|----------|-------------|
 | name | string? | Không | Tên mới (nếu cung cấp, không được rỗng, max 255) |
 | description | string? | Không | Mô tả mới (nếu cung cấp, max 1000). Truyền `""` để xoá mô tả |
-| isPublicToUnit | bool? | Không | `true/false` để thay đổi, không gửi field để giữ nguyên |
-| templateMetadataId | guid? | Không | Template metadata. **Chỉ gán được 1 lần** — không thể thay đổi nếu dataset đã có template |
 
 ### Behaviour
 
 - Chỉ cập nhật các field được gửi lên (partial update)
-- `templateMetadataId`: nếu dataset **chưa có** template → gán được lần đầu. Nếu **đã có** → báo lỗi, không cho thay đổi
+- `templateMetadataId` chỉ gán được lúc tạo dataset, không thể thay đổi sau đó
 
 ### Response (200)
 
-Trả về `DatasetDetailDto` (cấu trúc giống GET detail).
+Trả về `DatasetDto` (cấu trúc giống GET detail).
 
 ### Response (404)
 
@@ -251,10 +236,10 @@ Trả về `DatasetDetailDto` (cấu trúc giống GET detail).
 
 ## 5. Delete Dataset
 
-Xoá dataset (soft delete → vào Trash). Chỉ owner, manager của OU, hoặc user được share quyền Delete mới có thể xoá.
+Xoá dataset (soft delete → vào Trash). Chỉ owner, hoặc user được share quyền Delete mới có thể xoá. (Manager của Department chỉ có Read, không có Delete)
 
 ```
-DELETE /api/v1/user/me/datasets/{id:guid}
+DELETE /api/v1/datasets/{id:guid}
 ```
 
 ### Behaviour
@@ -267,7 +252,7 @@ DELETE /api/v1/user/me/datasets/{id:guid}
 | DatasetItem (tất cả items) | **Không bị ảnh hưởng** — tự động ẩn vì Dataset cha bị deleted |
 | Document (file gốc) | **Không bị ảnh hưởng** — giữ nguyên |
 | AccessShare | **Không bị ảnh hưởng** — giữ nguyên |
-| SystemStatistics | Decrement TotalDatasets (per-OU + global) |
+| SystemStatistics | Decrement TotalDatasets (global) |
 | S3 files (`ObjectKeyFilePdf`) | **Không xoá** |
 
 > **Khôi phục:** Admin vào Trash → Restore Dataset → tất cả items/documents tự động reappear.
@@ -293,7 +278,7 @@ Không có body.
 Lấy danh sách items trong dataset (cây thư mục). Hỗ trợ lọc theo parentId để xem từng cấp thư mục.
 
 ```
-GET /api/v1/user/me/datasets/{id:guid}/items?parentId=
+GET /api/v1/datasets/{id:guid}/items?parentId=
 ```
 
 ### Query Parameters
@@ -394,7 +379,8 @@ GET /api/v1/user/me/datasets/{id:guid}/items?parentId=
 
 | Status | Ý nghĩa |
 |--------|---------|
-| `Uploaded` | File vừa upload, chưa xử lý gì |
+| `Uploading` | Đang chờ client upload file lên MinIO qua presigned URL |
+| `Uploaded` | File đã upload xong, chưa xử lý gì |
 | `ProcessingOcr` | Đang chạy OCR |
 | `Successed` | OCR hoàn tất, đã gen Q&A thành công |
 | `Failed` | Xử lý thất bại (OCR hoặc GenQA lỗi) |
@@ -411,40 +397,217 @@ GET /api/v1/user/me/datasets/{id:guid}/items?parentId=
 
 ---
 
-## 7. Create Item (Folder / Document)
+## 7. Create Folder
 
-Tạo một item mới trong dataset (folder hoặc document). Yêu cầu quyền Update trên dataset.
+Tạo một folder mới trong dataset.
 
 ```
-POST /api/v1/user/me/datasets/{id:guid}/create-item
+POST /api/v1/datasets/{id:guid}/create-folder
 ```
 
-### Request (multipart/form-data)
+### Request Body
+
+```json
+{
+  "name": "Báo cáo tháng 1",
+  "parentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+}
+```
+
+### Fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| type | int | Có | `0` = Folder, `1` = Document |
-| name | string | Có khi type=0 | Tên folder (max 255 ký tự). Bỏ qua khi type=1 |
+| name | string | Có | Tên folder (max 255 ký tự) |
 | parentId | guid? | Không | ID của folder cha. `null` = tạo ở root |
-| file | file | Có khi type=1 | File PDF cần upload (max 100MB) |
 
 ### Behaviour
 
-- **type=0 (Folder):** Tạo DatasetItem với ItemType=Folder, DocumentId=null
-- **type=1 (Document):**
-  - Validate file: chỉ hỗ trợ PDF, kiểm tra magic number `%PDF`
-  - Kiểm tra trùng tên file trong hệ thống
-  - Tạo Document record + upload file lên S3 (bucket `ocr-upload-pdf`) + lưu cache local
-  - Tạo DatasetItem với ItemType=Document, DocumentId=Document vừa tạo
-- **Path** và **Level** tự động tính dựa trên parent:
-  - Root: `Path = "/{name}/"`, `Level = 0`
-  - Có parent: `Path = "{parent.Path}{name}/"`, `Level = parent.Level + 1`
-- **SortOrder** tự động = max SortOrder trong cùng parent + 1
+- Tạo DatasetItem với `ItemType=Folder`, `DocumentId=null`
+- Path tự động tính dựa trên parent, `SortOrder` = max trong cùng parent + 1
 
-### Security
+### Response (201 Created)
 
-- Yêu cầu quyền **Update** trên dataset (Owner, Manager OU, hoặc được share quyền Update)
-- Nếu dataset không tồn tại hoặc không có quyền: trả về **404**
+```json
+{
+  "itemId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "documentId": null,
+  "name": "Báo cáo tháng 1",
+  "itemType": "Folder",
+  "path": "/Báo cáo tháng 1/",
+  "level": 1,
+  "sortOrder": 0,
+  "createdAt": "2025-01-01T00:00:00Z",
+  "item": null
+}
+```
+
+### Response (400)
+
+```json
+{
+  "error": "Folder name is required"
+}
+```
+
+---
+
+## 8. Init Upload (Single File)
+
+Tạo document record trước, trả về presigned URL để client upload trực tiếp lên MinIO.
+
+```
+POST /api/v1/datasets/{id:guid}/init-upload
+```
+
+### Request Body
+
+```json
+{
+  "fileName": "Bao-cao-2025.pdf",
+  "fileSize": 5242880,
+  "contentType": "application/pdf",
+  "parentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+}
+```
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| fileName | string | Có | Tên file gốc (chỉ hỗ trợ .pdf) |
+| fileSize | int64 | Có | Kích thước file (bytes). Tối đa 100MB (104857600 bytes) |
+| contentType | string? | Không | MIME type. Mặc định `application/pdf` |
+| parentId | guid? | Không | ID folder cha. `null` = root |
+
+### Behaviour
+
+1. Validate file extension (`.pdf`) và `fileSize ≤ 100MB`
+2. Kiểm tra không trùng tên file với documents đang tồn tại
+3. Tạo Document record với status `Uploading`
+4. Sinh presigned URL cho PUT upload (thời hạn 1 giờ)
+5. Trả về URL cho client
+
+### Response (200)
+
+```json
+{
+  "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
+  "objectKey": "Bao-cao-2025.pdf",
+  "presignedUrl": "http://192.168.1.4:9000/ocr-upload-pdf/Bao-cao-2025.pdf?X-Amz-Algorithm=...",
+  "expiresAt": "2025-01-01T01:00:00Z"
+}
+```
+
+### Client Flow
+
+1. `init-upload` → nhận `presignedUrl`
+2. `PUT {presignedUrl}` với body là file content, header `Content-Type: application/pdf`
+3. `complete-upload` → tạo DatasetItem, chuyển document sang `Uploaded`
+
+---
+
+## 9. Init Upload Bulk
+
+Tạo nhiều documents cùng lúc, trả về danh sách presigned URLs tương ứng.
+
+```
+POST /api/v1/datasets/{id:guid}/init-upload-bulk
+```
+
+### Request Body
+
+```json
+{
+  "files": [
+    {
+      "fileName": "Bao-cao-Q1.pdf",
+      "fileSize": 4194304,
+      "contentType": "application/pdf"
+    },
+    {
+      "fileName": "Bao-cao-Q2.pdf",
+      "fileSize": 3145728
+    }
+  ]
+}
+```
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| files | array | Có | Danh sách files (tối đa 50) |
+| files[].fileName | string | Có | Tên file gốc (`.pdf`) |
+| files[].fileSize | int64 | Có | Kích thước file (bytes). Tối đa 100MB |
+| files[].contentType | string? | Không | MIME type. Mặc định `application/pdf` |
+
+### Behaviour
+
+- Validate tất cả files trước khi tạo bất kỳ document nào (fail nhanh nếu có lỗi)
+- Kiểm tra: extension `.pdf`, `fileSize ≤ 100MB`, không trùng tên trong request, không trùng tên trong DB
+- Tất cả documents tạo ở **root** dataset (không hỗ trợ `parentId`)
+- Thứ tự response khớp với thứ tự request
+
+### Response (200)
+
+```json
+{
+  "documents": [
+    {
+      "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
+      "objectKey": "Bao-cao-Q1.pdf",
+      "presignedUrl": "http://...",
+      "expiresAt": "2025-01-01T01:00:00Z"
+    },
+    {
+      "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa8",
+      "objectKey": "Bao-cao-Q2.pdf",
+      "presignedUrl": "http://...",
+      "expiresAt": "2025-01-01T01:00:00Z"
+    }
+  ]
+}
+```
+
+### Client Flow
+
+1. `init-upload-bulk` → nhận danh sách `presignedUrl`
+2. Upload từng file lên MinIO qua `PUT {presignedUrl}`
+3. Gọi `complete-upload/{documentId}` cho từng document riêng lẻ
+
+---
+
+## 10. Complete Upload
+
+Xác nhận upload hoàn tất, tạo DatasetItem và chuyển document từ `Uploading` → `Uploaded`.
+
+```
+POST /api/v1/datasets/{id:guid}/complete-upload/{documentId:guid}
+```
+
+### Request Body
+
+```json
+{
+  "parentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+}
+```
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| parentId | guid? | Không | ID folder cha. `null` = root |
+
+### Behaviour
+
+1. Kiểm tra document tồn tại và đang ở status `Uploading`
+2. Kiểm tra file đã upload thành công trên MinIO
+3. Lấy metadata từ MinIO: so sánh `ContentLength` với `FileSize` đã lưu
+4. Đọc 8 bytes đầu file, kiểm tra magic bytes PDF (`%PDF`)
+5. Tạo DatasetItem trỏ đến document
+6. Chuyển document status → `Uploaded`
 
 ### Response (201 Created)
 
@@ -467,48 +630,35 @@ POST /api/v1/user/me/datasets/{id:guid}/create-item
 }
 ```
 
-### Response Fields
+---
 
-| Field | Type | Description |
-|-------|------|-------------|
-| itemId | guid | ID của DatasetItem vừa tạo |
-| documentId | guid? | ID của Document (null nếu type=Folder) |
-| name | string | Tên folder hoặc tên file gốc |
-| itemType | string | `"Folder"` hoặc `"Document"` |
-| path | string | Materialized path của item |
-| level | int | Độ sâu trong cây thư mục |
-| sortOrder | int | Thứ tự sắp xếp trong cùng parent |
-| createdAt | datetime | Thời gian tạo |
-| item | object? | Thông tin document. `null` khi type=Folder. Gồm: `fileName`, `status`, `isOcred`, `isQaGenerated` |
+## 11. Renew Upload URL
 
-### Response (400)
+Tạo lại presigned URL mới cho document đang ở trạng thái `Uploading` (khi URL cũ hết hạn).
 
-```json
-{
-  "error": "Folder name is required"
-}
+```
+POST /api/v1/datasets/{id:guid}/renew-upload-url/{documentId:guid}
 ```
 
-```json
-{
-  "error": "Only PDF files are supported"
-}
-```
+### Response (200)
 
 ```json
 {
-  "error": "A file with name 'Bao-cao-2025.pdf' already exists"
+  "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa7",
+  "objectKey": "Bao-cao-2025.pdf",
+  "presignedUrl": "http://...",
+  "expiresAt": "2025-01-01T02:00:00Z"
 }
 ```
 
 ---
 
-## 8. Delete Item (Folder / Document)
+## 12. Delete Item (Folder / Document)
 
 Xoá một item trong dataset (soft delete → vào Trash). Yêu cầu quyền Update trên dataset.
 
 ```
-DELETE /api/v1/user/me/datasets/{id:guid}/items/{itemId:guid}
+DELETE /api/v1/datasets/{id:guid}/items/{itemId:guid}
 ```
 
 ### Behaviour
@@ -545,15 +695,15 @@ Không có body.
 |--------|-------------|
 | 401 | Unauthorized — Chưa đăng nhập |
 | 404 | Not Found — Dataset không tồn tại hoặc không có quyền truy cập |
-| 400 | Bad Request — Validation lỗi (name rỗng, quá dài, OU không hợp lệ) |
+| 400 | Bad Request — Validation lỗi (name rỗng, quá dài, department không hợp lệ) |
 | 500 | Internal Server Error — Lỗi hệ thống |
 
 ---
 
 ## Performance
 
-- **List datasets:** Query qua `GetAccessibleDatasetIdsAsync()` sử dụng index trên `OwnerUserId`, `OUId`, `AccessShares`
-- **Get detail:** Single query với `Include(Owner).Include(OU).Include(Items)`
+- **List datasets:** Query qua `GetAccessibleDatasetIdsAsync()` sử dụng index trên `OwnerUserId`, `DepartmentId`, `AccessShares`
+- **Get detail:** Single query với `Include(Items)`
 - **Items tree:** Query với composite index `(DatasetId, Level)` + `ParentId`. Thêm subquery filter để loại items dưới folder bị deleted (Path.StartsWith)
 - **Soft delete:** O(1) — chỉ update 1 row, không cascade
 - Tất cả query đều dùng `AsNoTracking()` cho read-only operations

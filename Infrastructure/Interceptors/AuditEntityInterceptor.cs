@@ -76,7 +76,6 @@ public class AuditEntityInterceptor : SaveChangesInterceptor
                         auditDeleteMod.DeletedBy = null;
                     }
 
-                    // Cascade restore: DatasetItem restored → restore Document too
                     if (entry.Entity is DatasetItem diRestore && diRestore.DocumentId.HasValue)
                     {
                         var isDeletedProp = entry.Property(nameof(IAuditDelete.IsDeleted));
@@ -91,9 +90,6 @@ public class AuditEntityInterceptor : SaveChangesInterceptor
                                 doc.IsDeleted = false;
                                 doc.DeletedAt = null;
                                 doc.DeletedBy = null;
-
-                                var ouId = GetOUIdFromDocument(context, doc.Id);
-                                UpdateDocumentStatistics(context, ouId, 1);
                             }
                         }
                     }
@@ -108,19 +104,11 @@ public class AuditEntityInterceptor : SaveChangesInterceptor
 
                         entry.State = EntityState.Modified;
 
-                        if (entry.Entity is Document doc)
-                        {
-                            var ouId = GetOUIdFromDocument(context, doc.Id);
-                            UpdateDocumentStatistics(context, ouId, -1);
-                        }
-
-                        // Cascade soft-delete: DatasetItem deleted → soft-delete its Document too
                         if (entry.Entity is DatasetItem di && di.DocumentId.HasValue)
                         {
                             var docEntry = context.ChangeTracker.Entries<Document>()
                                 .FirstOrDefault(e => e.Entity.Id == di.DocumentId.Value);
 
-                            // Skip if Document is already being soft-deleted (handled above)
                             if (docEntry?.State != EntityState.Deleted)
                             {
                                 var relatedDoc = docEntry?.Entity ?? context.Find<Document>(di.DocumentId.Value);
@@ -129,50 +117,12 @@ public class AuditEntityInterceptor : SaveChangesInterceptor
                                     relatedDoc.IsDeleted = true;
                                     relatedDoc.DeletedAt = now;
                                     relatedDoc.DeletedBy = userId;
-
-                                    var ouId = GetOUIdFromDocument(context, relatedDoc.Id);
-                                    UpdateDocumentStatistics(context, ouId, -1);
                                 }
                             }
                         }
                     }
                     break;
             }
-        }
-    }
-
-    public static void UpdateDocumentStatistics(DbContext context, Guid? ouId, int delta)
-    {
-        if (context == null || !ouId.HasValue) return;
-
-        context.Database.ExecuteSqlRaw(
-            @"UPDATE ""SystemStatistics""
-              SET ""TotalDocuments"" = ""TotalDocuments"" + CAST(@p0 AS integer),
-                  ""UpdatedAt"" = CURRENT_TIMESTAMP
-              WHERE ""OUId"" = CAST(@p1 AS uuid)",
-            delta, ouId.Value);
-    }
-
-    private static Guid? GetOUIdFromDocument(DbContext context, Guid documentId)
-    {
-        try
-        {
-            var ouId = context.Database
-                .SqlQueryRaw<Guid?>(
-                    @"SELECT o.""Id""
-                      FROM ""OrganizationUnits"" o
-                      JOIN ""Datasets"" d ON d.""OUId"" = o.""Id""
-                      JOIN ""DatasetItems"" di ON di.""DatasetId"" = d.""Id""
-                      WHERE di.""DocumentId"" = {0}
-                      LIMIT 1",
-                    documentId)
-                .FirstOrDefault();
-
-            return ouId;
-        }
-        catch
-        {
-            return null;
         }
     }
 }

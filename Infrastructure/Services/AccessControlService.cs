@@ -1,8 +1,7 @@
 using MarkdownGenQAs.Application.Interfaces.Services;
-using MarkdownGenQAs.Models.Constants;
 using MarkdownGenQAs.Models.Entities;
 using MarkdownGenQAs.Models.Enum;
-using Microsoft.AspNetCore.Identity;
+using MarkdownGenQAs.Utils;
 using Microsoft.EntityFrameworkCore;
 
 namespace MarkdownGenQAs.Infrastructure.Services;
@@ -10,86 +9,45 @@ namespace MarkdownGenQAs.Infrastructure.Services;
 public class AccessControlService : IAccessControlService
 {
     private readonly ApplicationContext _context;
-    private readonly UserManager<ApplicationUser> _userManager;
     private readonly ILogger<AccessControlService> _logger;
+    private readonly IHttpContextAccessor _httpContextAccessor;
 
     public AccessControlService(
         ApplicationContext context,
-        UserManager<ApplicationUser> userManager,
-        ILogger<AccessControlService> logger)
+        ILogger<AccessControlService> logger,
+        IHttpContextAccessor httpContextAccessor)
     {
         _context = context;
-        _userManager = userManager;
         _logger = logger;
+        _httpContextAccessor = httpContextAccessor;
     }
 
-    public async Task<bool> IsAdminAsync(Guid userId)
+    public Task<bool> IsAdminAsync(Guid userId)
     {
-        var user = await _userManager.FindByIdAsync(userId.ToString());
-        if (user == null) return false;
-        return await _userManager.IsInRoleAsync(user, RoleNames.Admin);
-    }
-
-    public async Task<bool> IsManagerOfOUAsync(Guid userId, Guid ouId)
-    {
-        var position = await _context.UserPositions
-            .FirstOrDefaultAsync(up => up.UserId == userId && up.OUId == ouId && up.Role == OrganizationRole.Manager);
-        return position != null;
-    }
-
-    public async Task<bool> IsManagerOrAboveOfOUAsync(Guid userId, Guid ouId)
-    {
-        var ou = await _context.OrganizationUnits.FindAsync(ouId);
-        if (ou == null) return false;
-
-        var position = await _context.UserPositions
-            .FirstOrDefaultAsync(up => up.UserId == userId && up.OUId == ouId && up.Role == OrganizationRole.Manager);
-        if (position != null) return true;
-
-        var parentOuIds = await GetAncestorOUIdsAsync(ou.Path);
-        foreach (var parentOuId in parentOuIds)
-        {
-            var parentPosition = await _context.UserPositions
-                .FirstOrDefaultAsync(up => up.UserId == userId && up.OUId == parentOuId && up.Role == OrganizationRole.Manager);
-            if (parentPosition != null) return true;
-        }
-
-        return false;
-    }
-
-    public async Task<bool> IsInOUAsync(Guid userId, Guid ouId)
-    {
-        return await _context.UserPositions
-            .AnyAsync(up => up.UserId == userId && up.OUId == ouId);
-    }
-
-    private async Task<List<Guid>> GetAncestorOUIdsAsync(string path)
-    {
-        if (string.IsNullOrEmpty(path)) return new List<Guid>();
-
-        var ouIds = path.Split('/', StringSplitOptions.RemoveEmptyEntries)
-            .Select(s => Guid.TryParse(s, out var g) ? g : Guid.Empty)
-            .Where(g => g != Guid.Empty)
-            .ToList();
-
-        return ouIds;
+        var user = _httpContextAccessor.HttpContext?.User;
+        if (user == null) return Task.FromResult(false);
+        return Task.FromResult(user.IsInRole("Admin"));
     }
 
     public async Task<DatasetPermissions> GetEffectivePermissionsAsync(Guid userId, Dataset dataset)
     {
-        if (await IsAdminAsync(userId)) return DatasetPermissions.FullControl;
         if (dataset.OwnerUserId == userId) return DatasetPermissions.FullControl;
 
         var effectiveMask = DatasetPermissions.None;
 
-        if (dataset.OUId.HasValue)
+        // Manager của Department mà dataset thuộc về → Read
+        if (dataset.DepartmentId.HasValue)
         {
-            if (await IsManagerOfOUAsync(userId, dataset.OUId.Value))
-                effectiveMask |= DatasetPermissions.FullControl;
-            else if (await IsInOUAsync(userId, dataset.OUId.Value) && dataset.IsPublicToUnit)
-                effectiveMask |= DatasetPermissions.Read;
+            var user = _httpContextAccessor.HttpContext?.User;
+            if (user != null)
+            {
+                var role = user.GetDepartmentRole(dataset.DepartmentId.Value);
+                if (role == DepartmentRole.Manager)
+                    effectiveMask |= DatasetPermissions.Read;
+            }
         }
 
+        // Direct shares to user
         var userShares = await _context.AccessShares
             .Where(s => s.DatasetId == dataset.Id && s.DatasetItemId == null && s.ShareToUserId == userId)
             .ToListAsync();
@@ -99,13 +57,16 @@ public class AccessControlService : IAccessControlService
             effectiveMask |= share.PermissionMask;
         }
 
-        var ouShares = await _context.AccessShares
-            .Where(s => s.DatasetId == dataset.Id && s.DatasetItemId == null && s.ShareToOUId != null)
-            .ToListAsync();
-
-        foreach (var share in ouShares)
+        // Shares to user's departments
+        var currentUserDepts = _httpContextAccessor.HttpContext?.User.GetDepartmentIds() ?? [];
+        if (currentUserDepts.Count != 0)
         {
-            if (share.ShareToOUId.HasValue && await IsInOUAsync(userId, share.ShareToOUId.Value))
+            var departmentShares = await _context.AccessShares
+                .Where(s => s.DatasetId == dataset.Id && s.DatasetItemId == null
+                    && s.ShareToDepartmentId != null && currentUserDepts.Contains(s.ShareToDepartmentId.Value))
+                .ToListAsync();
+
+            foreach (var share in departmentShares)
             {
                 effectiveMask |= share.PermissionMask;
             }
@@ -133,9 +94,6 @@ public class AccessControlService : IAccessControlService
         foreach (var share in itemShares)
         {
             if (share.ShareToUserId == userId)
-                effectiveMask |= share.PermissionMask;
-
-            if (share.ShareToOUId.HasValue && await IsInOUAsync(userId, share.ShareToOUId.Value))
                 effectiveMask |= share.PermissionMask;
         }
 
@@ -178,58 +136,88 @@ public class AccessControlService : IAccessControlService
         return perms.HasFlag(DatasetPermissions.Update);
     }
 
+    public async Task<bool> CanViewDocumentAsync(Guid userId, Guid documentId)
+    {
+        var datasetId = await _context.DatasetItems
+            .Where(di => di.DocumentId == documentId)
+            .Select(di => di.DatasetId)
+            .FirstOrDefaultAsync();
+
+        if (datasetId == Guid.Empty) return false;
+
+        var dataset = await _context.Datasets.FindAsync(datasetId);
+        if (dataset == null) return false;
+
+        return await CanViewDatasetAsync(userId, dataset);
+    }
+
+    public async Task<bool> CanWriteDocumentAsync(Guid userId, Guid documentId)
+    {
+        var datasetId = await _context.DatasetItems
+            .Where(di => di.DocumentId == documentId)
+            .Select(di => di.DatasetId)
+            .FirstOrDefaultAsync();
+
+        if (datasetId == Guid.Empty) return false;
+
+        var dataset = await _context.Datasets.FindAsync(datasetId);
+        if (dataset == null) return false;
+
+        return await CanWriteDatasetAsync(userId, dataset);
+    }
+
     public async Task<List<Guid>> GetAccessibleDatasetIdsAsync(Guid userId, bool includeDeleted = false)
     {
-        var isAdmin = await IsAdminAsync(userId);
-        if (isAdmin)
-        {
-            var query = includeDeleted
-                ? _context.Datasets.IgnoreQueryFilters()
-                : _context.Datasets.AsQueryable();
-            return await query.Select(d => d.Id).ToListAsync();
-        }
-
-        var myOUIds = await _context.UserPositions
-            .Where(up => up.UserId == userId)
-            .Select(up => up.OUId)
-            .ToListAsync();
-
         IQueryable<Dataset> datasetsQuery = includeDeleted
             ? _context.Datasets.IgnoreQueryFilters()
             : _context.Datasets.AsQueryable();
 
+        var userDeptIds = _httpContextAccessor.HttpContext?.User.GetDepartmentIds() ?? [];
+
+        // Owned datasets
         var ownedByMe = await datasetsQuery
             .Where(d => d.OwnerUserId == userId)
             .Select(d => d.Id)
             .ToListAsync();
 
-        var publicInMyOUs = await datasetsQuery
-            .Where(d => d.OUId.HasValue && myOUIds.Contains(d.OUId.Value) && d.IsPublicToUnit)
-            .Select(d => d.Id)
-            .ToListAsync();
-
-        var managerOfOUs = await _context.UserPositions
-            .Where(up => up.UserId == userId && up.Role == OrganizationRole.Manager)
-            .Select(up => up.OUId)
-            .ToListAsync();
-
-        var managedDatasets = await datasetsQuery
-            .Where(d => d.OUId.HasValue && managerOfOUs.Contains(d.OUId.Value))
-            .Select(d => d.Id)
-            .ToListAsync();
-
+        // Shared to user directly
         var sharedToMe = await _context.AccessShares
             .Where(s => s.ShareToUserId == userId && s.DatasetItemId == null)
             .Select(s => s.DatasetId)
             .ToListAsync();
 
-        var sharedToMyOUs = await _context.AccessShares
-            .Where(s => s.ShareToOUId.HasValue && myOUIds.Contains(s.ShareToOUId.Value) && s.DatasetItemId == null)
-            .Select(s => s.DatasetId)
-            .ToListAsync();
+        // Datasets where user is Manager of the dataset's department
+        var managedDeptIds = new List<Guid>();
+        if (userDeptIds.Count != 0)
+        {
+            var user = _httpContextAccessor.HttpContext?.User;
+            if (user != null)
+            {
+                managedDeptIds = userDeptIds
+                    .Where(did => user.GetDepartmentRole(did) == DepartmentRole.Manager)
+                    .ToList();
+            }
+        }
 
-        return ownedByMe.Union(publicInMyOUs).Union(managedDatasets)
-            .Union(sharedToMe).Union(sharedToMyOUs)
+        var managedDatasets = managedDeptIds.Count != 0
+            ? await datasetsQuery
+                .Where(d => d.DepartmentId != null && managedDeptIds.Contains(d.DepartmentId.Value))
+                .Select(d => d.Id)
+                .ToListAsync()
+            : [];
+
+        // Shared to user's departments
+        var sharedToDepts = userDeptIds.Count != 0
+            ? await _context.AccessShares
+                .Where(s => s.ShareToDepartmentId != null && userDeptIds.Contains(s.ShareToDepartmentId.Value) && s.DatasetItemId == null)
+                .Select(s => s.DatasetId)
+                .ToListAsync()
+            : [];
+
+        return ownedByMe
+            .Union(sharedToMe)
+            .Union(managedDatasets)
+            .Union(sharedToDepts)
             .Distinct()
             .ToList();
     }

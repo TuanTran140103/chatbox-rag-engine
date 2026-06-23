@@ -24,53 +24,21 @@ public class TrashService : ITrashService
     public async Task<List<TrashItemDto>> GetTrashItemsAsync(Guid userId)
     {
         var result = new List<TrashItemDto>();
-        var isAdmin = await _accessControl.IsAdminAsync(userId);
 
-        // OUs — admin only
-        if (isAdmin)
-        {
-            var deletedOUs = await _context.OrganizationUnits
-                .IgnoreQueryFilters()
-                .Where(o => o.IsDeleted)
-                .AsNoTracking()
-                .ToListAsync();
-
-            foreach (var ou in deletedOUs)
-            {
-                var hasDeletedAncestor = await _context.OrganizationUnits
-                    .IgnoreQueryFilters()
-                    .AnyAsync(o => o.IsDeleted && ou.Path.StartsWith(o.Path) && o.Id != ou.Id);
-
-                if (!hasDeletedAncestor)
-                {
-                    result.Add(new TrashItemDto(ou.Id, TrashItemType.OrganizationUnit, ou.Name, null, ou.DeletedAt ?? ou.CreatedAt, ou.DeletedBy));
-                }
-            }
-        }
-
-        // Datasets — filter by accessibility
         var accessibleDatasetIds = await _accessControl.GetAccessibleDatasetIdsAsync(userId, includeDeleted: true);
 
         var deletedDatasets = await _context.Datasets
             .IgnoreQueryFilters()
             .Where(d => d.IsDeleted && accessibleDatasetIds.Contains(d.Id))
-            .Select(d => new { d.Id, d.Name, d.OUId, d.DeletedAt, d.DeletedBy, OUName = d.OrganizationUnit!.Name })
+            .Select(d => new { d.Id, d.Name, d.DeletedAt, d.DeletedBy })
             .AsNoTracking()
             .ToListAsync();
 
         foreach (var ds in deletedDatasets)
         {
-            var hasDeletedParentOU = ds.OUId.HasValue && await _context.OrganizationUnits
-                .IgnoreQueryFilters()
-                .AnyAsync(o => o.Id == ds.OUId && o.IsDeleted);
-
-            if (!hasDeletedParentOU)
-            {
-                result.Add(new TrashItemDto(ds.Id, TrashItemType.Dataset, ds.Name, ds.OUName, ds.DeletedAt ?? DateTime.UtcNow, ds.DeletedBy));
-            }
+            result.Add(new TrashItemDto(ds.Id, TrashItemType.Dataset, ds.Name, null, ds.DeletedAt ?? DateTime.UtcNow, ds.DeletedBy));
         }
 
-        // Items — filter by accessible dataset IDs
         var deletedItems = await _context.DatasetItems
             .IgnoreQueryFilters()
             .Where(i => i.IsDeleted && accessibleDatasetIds.Contains(i.DatasetId))
@@ -107,10 +75,6 @@ public class TrashService : ITrashService
     {
         switch (type)
         {
-            case TrashItemType.OrganizationUnit:
-                if (!await _accessControl.IsAdminAsync(userId))
-                    return new ServiceResult { IsSuccess = false, ErrorMessage = "Forbidden" };
-                return await RestoreOUAsync(id);
             case TrashItemType.Dataset:
                 return await RestoreDatasetAsync(id, userId);
             case TrashItemType.Folder:
@@ -119,45 +83,6 @@ public class TrashService : ITrashService
             default:
                 return new ServiceResult { IsSuccess = false, ErrorMessage = $"Unknown type: {type}" };
         }
-    }
-
-    private async Task<ServiceResult> RestoreOUAsync(Guid ouId)
-    {
-        var ou = await _context.OrganizationUnits
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(o => o.Id == ouId);
-
-        if (ou == null)
-            return new ServiceResult { IsSuccess = false, ErrorMessage = "OU not found" };
-
-        using var transaction = await _context.Database.BeginTransactionAsync();
-        try
-        {
-            ou.IsDeleted = false;
-            ou.DeletedAt = null;
-            ou.DeletedBy = null;
-
-            var existingStats = await _context.SystemStatistics
-                .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(s => s.OUId == ouId);
-            if (existingStats != null)
-            {
-                existingStats.IsDeleted = false;
-                existingStats.DeletedAt = null;
-                existingStats.DeletedBy = null;
-            }
-
-            await _context.SaveChangesAsync();
-            await transaction.CommitAsync();
-        }
-        catch
-        {
-            await transaction.RollbackAsync();
-            throw;
-        }
-
-        _logger.LogInformation("OU {OUId} restored from trash", ouId);
-        return new ServiceResult { IsSuccess = true };
     }
 
     private async Task<ServiceResult> RestoreDatasetAsync(Guid datasetId, Guid userId)
@@ -179,10 +104,10 @@ public class TrashService : ITrashService
             dataset.DeletedAt = null;
             dataset.DeletedBy = null;
 
-            if (dataset.OUId.HasValue)
+            if (dataset.DepartmentId.HasValue)
             {
                 var ouStats = await _context.SystemStatistics
-                    .FirstOrDefaultAsync(s => s.OUId == dataset.OUId);
+                    .FirstOrDefaultAsync(s => s.DepartmentId == dataset.DepartmentId);
                 if (ouStats != null)
                     ouStats.TotalDatasets += 1;
             }
@@ -224,9 +149,6 @@ public class TrashService : ITrashService
 
     public async Task<ServiceResult> EmptyTrashAsync(Guid userId)
     {
-        if (!await _accessControl.IsAdminAsync(userId))
-            return new ServiceResult { IsSuccess = false, ErrorMessage = "Forbidden" };
-
         var trash = await GetTrashItemsAsync(userId);
         foreach (var item in trash)
         {
@@ -240,10 +162,6 @@ public class TrashService : ITrashService
     {
         switch (type)
         {
-            case TrashItemType.OrganizationUnit:
-                if (!await _accessControl.IsAdminAsync(userId))
-                    return new ServiceResult { IsSuccess = false, ErrorMessage = "Forbidden" };
-                return await PermanentDeleteOUAsync(id);
             case TrashItemType.Dataset:
                 return await PermanentDeleteDatasetAsync(id, userId);
             case TrashItemType.Folder:
@@ -252,69 +170,6 @@ public class TrashService : ITrashService
             default:
                 return new ServiceResult { IsSuccess = false, ErrorMessage = $"Unknown type: {type}" };
         }
-    }
-
-    private async Task<ServiceResult> PermanentDeleteOUAsync(Guid ouId)
-    {
-        var ou = await _context.OrganizationUnits
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(o => o.Id == ouId);
-
-        if (ou == null)
-            return new ServiceResult { IsSuccess = false, ErrorMessage = "OU not found" };
-
-        if (!ou.IsDeleted)
-            return new ServiceResult { IsSuccess = false, ErrorMessage = "OU is not in trash" };
-
-        var descendantIds = await _context.OrganizationUnits
-            .IgnoreQueryFilters()
-            .Where(o => o.Path.StartsWith(ou.Path) || o.Id == ouId)
-            .Select(o => o.Id)
-            .ToListAsync();
-
-        using var transaction = await _context.Database.BeginTransactionAsync();
-        try
-        {
-            await _context.Database.ExecuteSqlRawAsync(
-                @"DELETE FROM ""Documents"" WHERE ""DatasetItemId"" IN (
-                    SELECT ""Id"" FROM ""DatasetItems"" WHERE ""DatasetId"" IN (
-                        SELECT ""Id"" FROM ""Datasets"" WHERE ""OUId"" = ANY(@p0)
-                    )
-                )", descendantIds);
-
-            await _context.Database.ExecuteSqlRawAsync(
-                @"DELETE FROM ""DatasetItems"" WHERE ""DatasetId"" IN (
-                    SELECT ""Id"" FROM ""Datasets"" WHERE ""OUId"" = ANY(@p0)
-                )", descendantIds);
-
-            await _context.Database.ExecuteSqlRawAsync(
-                @"DELETE FROM ""AccessShares"" WHERE ""DatasetId"" IN (
-                    SELECT ""Id"" FROM ""Datasets"" WHERE ""OUId"" = ANY(@p0)
-                )", descendantIds);
-
-            await _context.Database.ExecuteSqlRawAsync(
-                @"DELETE FROM ""Datasets"" WHERE ""OUId"" = ANY(@p0)", descendantIds);
-
-            await _context.Database.ExecuteSqlRawAsync(
-                @"DELETE FROM ""UserPositions"" WHERE ""OUId"" = ANY(@p0)", descendantIds);
-
-            await _context.Database.ExecuteSqlRawAsync(
-                @"DELETE FROM ""SystemStatistics"" WHERE ""OUId"" = ANY(@p0)", descendantIds);
-
-            await _context.Database.ExecuteSqlRawAsync(
-                @"DELETE FROM ""OrganizationUnits"" WHERE ""Id"" = ANY(@p0)", descendantIds);
-
-            await _context.SaveChangesAsync();
-            await transaction.CommitAsync();
-        }
-        catch
-        {
-            await transaction.RollbackAsync();
-            throw;
-        }
-
-        _logger.LogInformation("OU {OUId} and {Count} descendants permanently deleted", ouId, descendantIds.Count);
-        return new ServiceResult { IsSuccess = true };
     }
 
     private async Task<ServiceResult> PermanentDeleteDatasetAsync(Guid datasetId, Guid userId)
@@ -332,7 +187,7 @@ public class TrashService : ITrashService
         if (!await _accessControl.CanDeleteDatasetAsync(userId, dataset))
             return new ServiceResult { IsSuccess = false, ErrorMessage = "Forbidden" };
 
-        var ouId = dataset.OUId;
+        var departmentId = dataset.DepartmentId;
 
         using var transaction = await _context.Database.BeginTransactionAsync();
         try
@@ -351,11 +206,11 @@ public class TrashService : ITrashService
             await _context.Database.ExecuteSqlRawAsync(
                 @"DELETE FROM ""Datasets"" WHERE ""Id"" = CAST(@p0 AS uuid)", datasetId);
 
-            if (ouId.HasValue)
+            if (departmentId.HasValue)
             {
                 var ouStats = await _context.SystemStatistics
                     .IgnoreQueryFilters()
-                    .FirstOrDefaultAsync(s => s.OUId == ouId);
+                    .FirstOrDefaultAsync(s => s.DepartmentId == departmentId);
                 if (ouStats != null)
                     ouStats.TotalDatasets = Math.Max(0, ouStats.TotalDatasets - 1);
             }

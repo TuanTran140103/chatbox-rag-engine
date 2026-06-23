@@ -273,7 +273,7 @@ public class DocumentIndexingBackgroundJobService : IDocumentIndexingBackgroundJ
                     await concurrency.WaitAsync(ct);
                     try
                     {
-                        var chunkName = chunk.Title ?? chunk.TittleHirarchy ?? $"chunk {chunk.Index}";
+                        var chunkName = chunk.Title ?? chunk.TitleHierarchy ?? $"chunk {chunk.Index}";
                         var summary = await _genQAsService.GenSummaryDocumentAsync(chunk.Content, chunkName, ct);
                         chunk.ContentSummary = summary;
                     }
@@ -381,7 +381,7 @@ public class DocumentIndexingBackgroundJobService : IDocumentIndexingBackgroundJ
         {
             await UpdateJobLogsAsync(document.Id);
 
-            document.Status = StatusDocument.Successed;
+            document.Status = StatusDocument.Succeeded;
             document.ProcessingTimeIndexing = (int)sw.Elapsed.TotalSeconds;
             document.IsIndexed = true;
             _uow.Documents.Update(document);

@@ -19,23 +19,25 @@ public static class ValidateFileUtil
         };
     }
 
+    public static bool IsValidPdf(byte[] head)
+    {
+        if (head.Length < 4)
+            return false;
+
+        var signature = Encoding.ASCII.GetString(head);
+        var trimmed = signature.AsSpan().TrimStart();
+
+        if (trimmed.Length >= 3 && trimmed[0] == '\u00EF' && trimmed[1] == '\u00BB' && trimmed[2] == '\u00BF')
+            trimmed = trimmed[3..];
+
+        return trimmed.StartsWith("%PDF");
+    }
+
     public static async Task<(bool IsValid, string? ErrorMessage)> ValidatePdfAsync(Stream stream, string fileName)
     {
         var header = await ReadHeaderAsync(stream);
 
-        if (header.Length < 4)
-            return (false, "Invalid PDF file content");
-
-        var signature = Encoding.ASCII.GetString(header);
-
-        var trimmed = signature.AsSpan().TrimStart();
-        if (trimmed.Length != signature.Length)
-            signature = trimmed.ToString();
-
-        if (signature.Length >= 3 && signature[0] == '\u00EF' && signature[1] == '\u00BB' && signature[2] == '\u00BF')
-            signature = signature[3..];
-
-        if (!signature.StartsWith("%PDF"))
+        if (!IsValidPdf(header))
             return (false, "Invalid PDF file content");
 
         return (true, null);

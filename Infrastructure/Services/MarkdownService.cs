@@ -203,7 +203,7 @@ public class MarkdownService : IMarkdownService
                 Content = content,
                 TokensCount = 0,
                 Type = TypeChunk.Table,
-                TittleHirarchy = hierarchyPath,
+                TitleHierarchy = hierarchyPath,
                 Title = tableTitle,
                 SourceStart = firstBlock.Span.Start,
                 SourceEnd = lastBlock.Span.End
@@ -766,7 +766,7 @@ public class MarkdownService : IMarkdownService
             Content = content,
             TokensCount = tokens,
             Type = type,
-            TittleHirarchy = hierarchy,
+            TitleHierarchy = hierarchy,
             Title = title,
             ContentSummary = contentSummary
         };

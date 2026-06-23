@@ -29,7 +29,6 @@ public class Document : BaseEntity, IAuditUser, IAuditDelete
     public int GenQaCount { get; set; }
     public int IndexingCount { get; set; }
     public Guid? UserId { get; set; }
-    public ApplicationUser? User { get; set; }
 
     public DateTime? OcrStartedAt { get; set; }
     public DateTime? OcrCompletedAt { get; set; }
@@ -37,6 +36,9 @@ public class Document : BaseEntity, IAuditUser, IAuditDelete
     public DateTime? GenQaCompletedAt { get; set; }
     public DateTime? IndexingStartedAt { get; set; }
     public DateTime? IndexingCompletedAt { get; set; }
+
+    public long? FileSize { get; set; }
+    public string? ContentType { get; set; }
 
     public Guid? DatasetItemId { get; set; }
     public DatasetItem? DatasetItem { get; set; }

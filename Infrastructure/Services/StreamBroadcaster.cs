@@ -8,6 +8,11 @@ namespace MarkdownGenQAs.Infrastructure.Services;
 
 public class StreamBroadcaster : IProcessBroadcaster
 {
+    private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+    };
+
     private readonly IConnectionMultiplexer _redis;
 
     public StreamBroadcaster(IConnectionMultiplexer redis)
@@ -22,7 +27,7 @@ public class StreamBroadcaster : IProcessBroadcaster
     {
         var db = _redis.GetDatabase();
         message.ProcessType = processType;
-        var payload = JsonSerializer.Serialize(message);
+        var payload = JsonSerializer.Serialize(message, _jsonOptions);
         var key = GetStreamKey(processType, message.DocumentId);
 
         var entryId = await db.StreamAddAsync(key, new NameValueEntry[]
@@ -40,41 +45,18 @@ public class StreamBroadcaster : IProcessBroadcaster
         Guid documentId,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        await foreach (var _ in SubscribeInternalAsync(processType, documentId, null, ct))
-        {
-            yield return _;
-        }
-    }
-
-    public IAsyncEnumerable<NotificationMessage> SubscribeWithResumeAsync(
-        string processType,
-        Guid documentId,
-        string? afterId,
-        CancellationToken ct)
-    {
-        return SubscribeInternalAsync(processType, documentId, afterId, ct);
-    }
-
-    private async IAsyncEnumerable<NotificationMessage> SubscribeInternalAsync(
-        string processType,
-        Guid documentId,
-        string? afterId,
-        [EnumeratorCancellation] CancellationToken ct)
-    {
         var db = _redis.GetDatabase();
         var key = GetStreamKey(processType, documentId);
 
-        var start = string.IsNullOrEmpty(afterId) ? "-" : afterId;
-
-        var entries = await db.StreamRangeAsync(key, start, "+");
+        // Đọc toàn bộ history từ đầu stream
+        var entries = await db.StreamRangeAsync(key, "-", "+");
         foreach (var entry in entries)
         {
-            if (!string.IsNullOrEmpty(afterId) && entry.Id.ToString() == afterId)
-                continue;
             var msg = Deserialize(entry);
             if (msg != null) yield return msg;
         }
 
+        // Poll message mới
         var lastEntry = entries.LastOrDefault();
         var lastId = lastEntry.Id.IsNullOrEmpty ? "0-0" : lastEntry.Id.ToString();
         while (!ct.IsCancellationRequested)
@@ -97,6 +79,20 @@ public class StreamBroadcaster : IProcessBroadcaster
         }
     }
 
+    public async Task<List<NotificationMessage>> ReadHistoryAsync(string processType, Guid documentId)
+    {
+        var db = _redis.GetDatabase();
+        var key = GetStreamKey(processType, documentId);
+        var entries = await db.StreamRangeAsync(key, "-", "+");
+        var messages = new List<NotificationMessage>(entries.Length);
+        foreach (var entry in entries)
+        {
+            var msg = Deserialize(entry);
+            if (msg != null) messages.Add(msg);
+        }
+        return messages;
+    }
+
     public async Task ClearHistoryAsync(string processType, Guid documentId)
     {
         var db = _redis.GetDatabase();
@@ -112,7 +108,7 @@ public class StreamBroadcaster : IProcessBroadcaster
 
         if (dataValue.IsNullOrEmpty) return null;
 
-        var msg = JsonSerializer.Deserialize<NotificationMessage>(dataValue.ToString());
+        var msg = JsonSerializer.Deserialize<NotificationMessage>(dataValue.ToString(), _jsonOptions);
         if (msg != null) msg.EntryId = entry.Id;
         return msg;
     }

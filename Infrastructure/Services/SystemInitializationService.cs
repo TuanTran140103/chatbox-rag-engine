@@ -1,35 +1,31 @@
 using MarkdownGenQAs.Application.Interfaces.ExternalServices;
 using MarkdownGenQAs.Application.Interfaces.Services;
 using MarkdownGenQAs.Application.Service;
-using MarkdownGenQAs.Models.Constants;
-using MarkdownGenQAs.Models.Entities;
-using MarkdownGenQAs.Models.Enum;
+using MarkdownGenQAs.Infrastructure;
 using MarkdownGenQAs.Options;
-using MarkdownGenQAs.Utils;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Qdrant.Client.Grpc;
+using StackExchange.Redis;
 
 namespace MarkdownGenQAs.Infrastructure.Services;
 
-/// <summary>
-/// Thực hiện cleanup hệ thống và khởi tạo dữ liệu mặc định (Roles, Root OU, Admin) ngay khi Ứng dụng Start.
-/// </summary>
 public class SystemInitializationService : IHostedService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<SystemInitializationService> _logger;
-    private readonly InitialSettings _initialSettings;
+    private readonly IConnectionMultiplexer _redis;
+    private const string OcrStreamKey = "ocr:events:stream";
+    private const string OcrConsumerGroup = "markdowngenqas-group";
 
     public SystemInitializationService(
         IServiceProvider serviceProvider,
         ILogger<SystemInitializationService> logger,
-        IOptions<InitialSettings> initialSettings)
+        IConnectionMultiplexer redis)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
-        _initialSettings = initialSettings.Value;
+        _redis = redis;
     }
 
     private Distance ParseDistance(string? distance) => distance switch
@@ -56,11 +52,9 @@ public class SystemInitializationService : IHostedService
             {
                 var context = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
 
-                // 0. Apply pending migrations (auto-creates database if not exists)
                 await context.Database.MigrateAsync(cancellationToken);
                 _logger.LogInformation("[SystemInitialization] Database migrations applied.");
 
-                // 1. Cleanup Redis
                 var concurrencyService = scope.ServiceProvider.GetRequiredService<IConcurrencyService>();
                 await concurrencyService.ClearAllModelsAsync();
                 await concurrencyService.ClearAllStreamsAsync();
@@ -72,10 +66,41 @@ public class SystemInitializationService : IHostedService
                 throw;
             }
 
-            // 2. Initialize Qdrant collections — FATAL: app không thể hoạt động nếu Qdrant down
             await InitializeQdrantCollectionsAsync(scope);
 
-            // 3. Indexing Job Recovery — non-fatal: chỉ log lỗi, app vẫn chạy
+            try
+            {
+                var templateSeeder = scope.ServiceProvider.GetRequiredService<TemplateMetadataSeeder>();
+                await templateSeeder.SeedAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[SystemInitialization] Error during template seeding.");
+            }
+
+            try
+            {
+                await ResetOcrStreamAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[SystemInitialization] Error during Redis OCR stream reset.");
+            }
+
+            try
+            {
+                var ocrRecovery = scope.ServiceProvider.GetRequiredService<OcrRecoveryService>();
+                var ocrResult = await ocrRecovery.RecoverOcrJobsAsync(cancellationToken);
+                _logger.LogInformation(
+                    "[SystemInitialization] OCR recovery: processing={ProcFound} (resubmitted={ProcResub}, failed={ProcFail}), pending={PendFound} (resubmitted={PendResub}, skipped={PendSkip}, failed={PendFail})",
+                    ocrResult.ProcessingFound, ocrResult.ProcessingResubmitted, ocrResult.ProcessingFailed,
+                    ocrResult.PendingFound, ocrResult.PendingResubmitted, ocrResult.PendingSkipped, ocrResult.PendingFailed);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[SystemInitialization] Error during OCR job recovery.");
+            }
+
             try
             {
                 var documentService = scope.ServiceProvider.GetRequiredService<DocumentService>();
@@ -95,101 +120,17 @@ public class SystemInitializationService : IHostedService
                 _logger.LogError(ex, "Error during Indexing job recovery.");
             }
 
-            // 4. Seed Data — non-fatal
             try
             {
-                await SeedRolesAsync(scope);
-                var rootOu = await SeedRootOrganizationUnitAsync(scope);
-                await SeedAdminUserAsync(scope, rootOu);
+                var minioAdmin = scope.ServiceProvider.GetRequiredService<IMinioAdminService>();
+                await minioAdmin.EnsureOcrUserAsync(cancellationToken);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[SystemInitialization] Error during seed data.");
+                _logger.LogError(ex, "[SystemInitialization] Error during MinIO OCR user setup.");
             }
 
             _logger.LogInformation("[SystemInitialization] System initialization completed successfully.");
-        }
-    }
-
-    private async Task SeedRolesAsync(IServiceScope scope)
-    {
-        var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<ApplicationRole>>();
-        
-        string[] roles = { RoleNames.Admin, RoleNames.User };
-        foreach (var roleName in roles)
-        {
-            if (!await roleManager.RoleExistsAsync(roleName))
-            {
-                _logger.LogInformation("Seeding role: {RoleName}", roleName);
-                await roleManager.CreateAsync(new ApplicationRole { Name = roleName });
-            }
-        }
-    }
-
-    private async Task<OrganizationUnit?> SeedRootOrganizationUnitAsync(IServiceScope scope)
-    {
-        var context = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
-        
-        var rootOu = await context.OrganizationUnits.FirstOrDefaultAsync(o => o.ParentId == null && !o.IsDeleted);
-        if (rootOu == null)
-        {
-            _logger.LogInformation("Seeding root organization unit...");
-            rootOu = new OrganizationUnit
-            {
-                Id = Guid.NewGuid(),
-                Name = "Hệ thống Root",
-                Code = "ROOT",
-                Path = string.Empty,
-                Level = 0
-            };
-            rootOu.Path = rootOu.Id.ToString();
-            
-            context.OrganizationUnits.Add(rootOu);
-            await context.SaveChangesAsync();
-        }
-        return rootOu;
-    }
-
-    private async Task SeedAdminUserAsync(IServiceScope scope, OrganizationUnit? rootOu)
-    {
-        var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
-        var context = scope.ServiceProvider.GetRequiredService<ApplicationContext>();
-        
-        if (!await userManager.Users.AnyAsync())
-        {
-            var adminConfig = _initialSettings.AdminUser;
-            _logger.LogInformation("Seeding admin user: {Email}", adminConfig.Email);
-            
-            var adminUser = new ApplicationUser
-            {
-                UserName = adminConfig.UserName,
-                Email = adminConfig.Email,
-                EmailConfirmed = true
-            };
-
-            var result = await userManager.CreateAsync(adminUser, adminConfig.Password);
-            if (result.Succeeded)
-            {
-                await userManager.AddToRoleAsync(adminUser, RoleNames.Admin);
-                
-                if (rootOu != null)
-                {
-                    _logger.LogInformation("Assigning admin user to root OU...");
-                    context.UserPositions.Add(new UserPosition
-                    {
-                        UserId = adminUser.Id,
-                        OUId = rootOu.Id,
-                        Role = OrganizationRole.Manager,
-                        IsPrimary = true
-                    });
-                    await context.SaveChangesAsync();
-                }
-            }
-            else
-            {
-                var errors = string.Join(", ", result.Errors.Select(e => e.Description));
-                _logger.LogError("Failed to seed admin user: {Errors}", errors);
-            }
         }
     }
 
@@ -231,7 +172,6 @@ public class SystemInitializationService : IHostedService
             _logger.LogInformation("[Qdrant] Collection '{CollectionName}' already exists.", collectionName);
         }
 
-        // Create indexes for common filter fields
         try
         {
             await qdrantService.CreatePayloadIndexAsync(collectionName, "documentId", PayloadSchemaType.Keyword);
@@ -244,4 +184,33 @@ public class SystemInitializationService : IHostedService
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    private async Task ResetOcrStreamAsync()
+    {
+        var db = _redis.GetDatabase();
+
+        try
+        {
+            await db.KeyDeleteAsync(OcrStreamKey);
+            _logger.LogInformation("[SystemInitialization] Deleted Redis stream {StreamKey} for clean restart.", OcrStreamKey);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[SystemInitialization] Failed to delete stream {StreamKey}.", OcrStreamKey);
+        }
+
+        try
+        {
+            await db.StreamCreateConsumerGroupAsync(OcrStreamKey, OcrConsumerGroup, "$", true);
+            _logger.LogInformation("[SystemInitialization] Recreated consumer group {Group} on {StreamKey}.", OcrConsumerGroup, OcrStreamKey);
+        }
+        catch (RedisServerException ex) when (ex.Message.Contains("BUSYGROUP") || ex.Message.Contains("already exists"))
+        {
+            _logger.LogInformation("[SystemInitialization] Consumer group {Group} already exists.", OcrConsumerGroup);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[SystemInitialization] Failed to recreate consumer group.");
+        }
+    }
 }

@@ -1,9 +1,9 @@
+using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Options;
 using MarkdownGenQAs.Options;
 using MarkdownGenQAs.Application.Interfaces.ExternalServices;
 using MarkdownGenQAs.Infrastructure.Exceptions;
-using System.Net.Http.Headers;
-using System.Text.Json;
 
 namespace MarkdownGenQAs.Infrastructure.ExternalServices;
 
@@ -47,48 +47,41 @@ public class OCRService : IOCRService
         }
     }
 
-    public async Task<OcrProcessResponse> ProcessAsync(IFormFile file, string modelId = "dotsocr")
-    {
-        using var stream = file.OpenReadStream();
-        return await SubmitPdfAsync(stream, file.FileName, modelId);
-    }
-
-    public async Task<OcrProcessResponse> ProcessAsync(Stream fileStream, string fileName, string contentType, string modelId = "deepseekocr")
-    {
-        return await SubmitPdfAsync(fileStream, fileName, modelId);
-    }
-
-    /// <inheritdoc/>
-    public async Task<OcrProcessResponse> SubmitPdfAsync(Stream pdfStream, string fileName, string modelId = "deepseekocr")
+    public async Task<List<string>> GetSupportedModelsAsync()
     {
         try
         {
-            using var content = new MultipartFormDataContent();
+            var response = await _httpClient.GetAsync("/api/ocr/supported-models");
+            response.EnsureSuccessStatusCode();
+            var models = await response.Content.ReadFromJsonAsync<List<string>>();
+            return models ?? new List<string>();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error fetching supported OCR models");
+            throw new OcrApiException(500, "Failed to fetch supported OCR models", ex);
+        }
+    }
 
-            // Copy stream to memory if not seekable
-            MemoryStream? ms = null;
-            Stream uploadStream = pdfStream;
-            if (!pdfStream.CanSeek)
+    public async Task<OcrProcessResponse> ProcessFromS3Async(string bucketName, string objectKey, string modelId = "deepseekocr")
+    {
+        try
+        {
+            var payload = new
             {
-                ms = new MemoryStream();
-                await pdfStream.CopyToAsync(ms);
-                ms.Position = 0;
-                uploadStream = ms;
-            }
+                bucket = bucketName,
+                objectKey,
+                modelId
+            };
 
-            var fileContent = new StreamContent(uploadStream);
-            fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+            var json = JsonSerializer.Serialize(payload);
+            var stringContent = new StringContent(json, Encoding.UTF8, "application/json");
 
-            // Theo API mới: field name là "File" (case-sensitive)
-            content.Add(fileContent, "File", fileName);
-            content.Add(new StringContent(modelId), "ModelId");
-
-            // API mới: /api/ocr/process (lowercase)
             var url = "/api/ocr/process";
-            _logger.LogInformation("Calling OCR API Submit: {Url}, ModelId: {ModelId}, FileName: {FileName}",
-                url, modelId, fileName);
+            _logger.LogInformation("Calling OCR API ProcessFromS3: {Url}, Bucket: {Bucket}, Key: {ObjectKey}, ModelId: {ModelId}",
+                url, bucketName, objectKey, modelId);
 
-            var response = await _httpClient.PostAsync(url, content);
+            var response = await _httpClient.PostAsync(url, stringContent);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -113,7 +106,7 @@ public class OCRService : IOCRService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error calling OCR API SubmitPdfAsync");
+            _logger.LogError(ex, "Error calling OCR API ProcessFromS3Async");
             throw new OcrApiException(500, "Internal error calling OCR service", ex);
         }
     }

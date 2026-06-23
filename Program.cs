@@ -10,16 +10,8 @@ using GenQAServer.Options;
 using System.Text.Json.Serialization;
 using GenQAServer.Infrastructure;
 using MarkdownGenQAs.Application.Interfaces.Services;
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authentication.OpenIdConnect;
-using Microsoft.IdentityModel.Protocols.OpenIdConnect;
-using Microsoft.AspNetCore.Authentication.Cookies;
-using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.HttpOverrides;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Identity;
-using MarkdownGenQAs.Models.Entities;
-using MarkdownGenQAs.Infrastructure;
+using MarkdownGenQAs.Infrastructure.Middleware;
 
 Env.Load();
 var builder = WebApplication.CreateBuilder(args);
@@ -102,19 +94,6 @@ builder.Services.AddHangfireServer(options =>
 Log.Information("Hangfire server configured with {WorkerCount} workers", workerCount);
 
 // Add services to the container.
-builder.Services.AddCors(options =>
-{
-    var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>() ?? Array.Empty<string>();
-    options.AddPolicy("AllowAll",
-        builder =>
-        {
-            builder.WithOrigins(allowedOrigins)
-                   .AllowAnyMethod()
-                   .AllowAnyHeader()
-                   .AllowCredentials();
-        });
-});
-
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
@@ -122,110 +101,9 @@ builder.Services.AddControllers()
     });
 builder.Services.AddOpenApi();
 
-builder.Services.AddIdentity<ApplicationUser, ApplicationRole>(options =>
-{
-    options.Password.RequireDigit = false;
-    options.Password.RequireLowercase = false;
-    options.Password.RequireUppercase = false;
-    options.Password.RequireNonAlphanumeric = false;
-    options.Password.RequiredLength = 6;
-    options.User.RequireUniqueEmail = true;
-    options.SignIn.RequireConfirmedEmail = false;
-    options.SignIn.RequireConfirmedAccount = false;
-})
-.AddEntityFrameworkStores<ApplicationContext>()
-.AddDefaultTokenProviders();
+builder.Services.AddAuthentication("Kong").AddScheme<KongAuthenticationSchemeOptions, KongAuthenticationHandler>("Kong", null);
 
-builder.Services.ConfigureApplicationCookie(options =>
-{
-    options.Cookie.Name = "MarkdownGenQAs.Auth";
-    options.Cookie.HttpOnly = true;
-    options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-    options.Cookie.SameSite = SameSiteMode.Lax;
-    options.ExpireTimeSpan = TimeSpan.FromHours(8);
-    options.SlidingExpiration = true;
-    options.LoginPath = "/api/auth/login";
-    options.Events.OnRedirectToLogin = context =>
-    {
-        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        return Task.CompletedTask;
-    };
-});
-
-builder.Services.AddAuthentication(options =>
-{
-    options.DefaultScheme = IdentityConstants.ApplicationScheme;
-    options.DefaultChallengeScheme = OpenIdConnectDefaults.AuthenticationScheme;
-})
-.AddOpenIdConnect(OpenIdConnectDefaults.AuthenticationScheme, options =>
-{
-    var authority = Environment.GetEnvironmentVariable("AUTHENTIK__AUTHORITY")
-        ?? throw new InvalidOperationException("AUTHENTIK__AUTHORITY is not set");
-    var clientId = Environment.GetEnvironmentVariable("AUTHENTIK__CLIENTID")
-        ?? throw new InvalidOperationException("AUTHENTIK__CLIENTID is not set");
-    var clientSecret = Environment.GetEnvironmentVariable("AUTHENTIK__CLIENTSECRET")
-        ?? throw new InvalidOperationException("AUTHENTIK__CLIENTSECRET is not set");
-
-    Log.Information("Configuring OIDC with Authority: {Authority}", authority);
-
-    options.Authority = authority;
-    options.ClientId = clientId;
-    options.ClientSecret = clientSecret;
-    options.ResponseType = OpenIdConnectResponseType.Code;
-    options.SaveTokens = true;
-    options.GetClaimsFromUserInfoEndpoint = true;
-    options.RequireHttpsMetadata = false;
-    options.CallbackPath = "/signin-oidc";
-    options.SignedOutCallbackPath = "/signout-callback-oidc";
-    options.SignedOutRedirectUri = builder.Configuration["Auth:FrontendBaseUrl"] + "/login";
-    options.Scope.Clear();
-    options.Scope.Add("openid");
-    options.Scope.Add("profile");
-    options.Scope.Add("email");
-
-    options.TokenValidationParameters = new TokenValidationParameters
-    {
-        ValidateIssuer = true,
-        ValidateAudience = false,
-        ValidateLifetime = true,
-        NameClaimType = "preferred_username"
-    };
-
-    options.Events = new OpenIdConnectEvents
-    {
-        OnSignedOutCallbackRedirect = context =>
-        {
-            var frontendUrl = builder.Configuration["Auth:FrontendBaseUrl"]?.TrimEnd('/') + "/login";
-            Log.Information("SignOut Callback reached. Redirecting to Frontend: {Url}", frontendUrl);
-
-            context.Response.ContentType = "text/html";
-            var html = $@"
-                <html>
-                <head><title>Logging out...</title></head>
-                <body>
-                    <script>
-                        window.top.location.href = '{frontendUrl}';
-                    </script>
-                </body>
-                </html>";
-            
-            return context.Response.WriteAsync(html);
-        }
-    };
-});
-
-builder.Services.AddAuthorization(options =>
-{
-    options.AddPolicy("AdminOnly", policy =>
-        policy.Requirements.Add(new MarkdownGenQAs.Infrastructure.Authorization.AdminRequirement()));
-});
-
-builder.Services.AddScoped<IAuthorizationHandler, MarkdownGenQAs.Infrastructure.Authorization.AdminRequirementHandler>();
-
-// Auth Options
-builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
-
-// Cấu hình thời gian chờ shutdown ggraceful
+// Cấu hình thời gian chờ shutdown graceful
 builder.Services.Configure<HostOptions>(options =>
 {
     options.ShutdownTimeout = TimeSpan.FromSeconds(30);
@@ -260,13 +138,14 @@ else
 }
 
 app.UseSerilogRequestLogging();
-app.UseCors("AllowAll");
 // app.UseHttpsRedirection(); // Disabled for development
+app.UseMiddleware<KongUserMiddleware>();
 app.UseAuthentication();
-app.UseMiddleware<MarkdownGenQAs.Infrastructure.Middleware.GatewayUserMiddleware>();
 app.UseAuthorization();
 
 app.MapControllers();
+
+app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
 
 // Hangfire Dashboard
 app.UseHangfireDashboard(hangfireOptions.DashboardPath, new DashboardOptions
@@ -279,8 +158,18 @@ app.UseHangfireDashboard(hangfireOptions.DashboardPath, new DashboardOptions
 Log.Information("Hangfire Dashboard available at: {DashboardPath}", hangfireOptions.DashboardPath);
 
 // Register Recurring Jobs
-RecurringJob.RemoveIfExists("cleanup-old-logs"); // Remove old job that references deleted types
+RecurringJob.RemoveIfExists("cleanup-old-logs");
 RecurringJob.AddOrUpdate("cleanup-old-cache", () => DocumentHelper.CleanupOldCache(), Cron.Daily);
+
+var orphanCleanupJobId = "cleanup-orphan-files";
+RecurringJob.RemoveIfExists(orphanCleanupJobId);
+RecurringJob.AddOrUpdate<IOrphanFileCleanupService>(orphanCleanupJobId,
+    x => x.CleanupOrphanFilesAsync(CancellationToken.None), Cron.Daily);
+
+var stuckUploadsJobId = "cleanup-stuck-uploads";
+RecurringJob.RemoveIfExists(stuckUploadsJobId);
+RecurringJob.AddOrUpdate<IOrphanFileCleanupService>(stuckUploadsJobId,
+    x => x.CleanupStuckUploadingDocumentsAsync(CancellationToken.None), Cron.Hourly);
 
 Log.Information("Starting web application...");
 Log.Information("Application is running. Press Ctrl+C to shut down.");

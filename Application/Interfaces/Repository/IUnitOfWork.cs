@@ -1,5 +1,3 @@
-using MarkdownGenQAs.Application.Interfaces.Repository;
-
 namespace MarkdownGenQAs.Application.Interfaces.Repository;
 
 public interface IUnitOfWork : IDisposable
@@ -10,8 +8,6 @@ public interface IUnitOfWork : IDisposable
     IDatasetRepository Datasets { get; }
     IDatasetItemRepository DatasetItems { get; }
     IAccessShareRepository AccessShares { get; }
-    IOrganizationUnitRepository OrganizationUnits { get; }
-    IUserPositionRepository UserPositions { get; }
 
     Task<int> SaveChangesAsync();
     Task BeginTransactionAsync();

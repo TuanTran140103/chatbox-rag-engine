@@ -2,9 +2,10 @@ namespace MarkdownGenQAs.Models.Enum;
 
 public enum StatusDocument
 {
+    Uploading,
     Uploaded,
     Failed,
-    Successed,
+    Succeeded,
     ProcessingOcr,
     ProcessingGenQa,
     ProcessingIndexing,

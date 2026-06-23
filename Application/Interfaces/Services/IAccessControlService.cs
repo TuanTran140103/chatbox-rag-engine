@@ -13,10 +13,10 @@ public interface IAccessControlService
     Task<bool> CanViewDatasetItemAsync(Guid userId, DatasetItem datasetItem);
     Task<bool> CanWriteDatasetItemAsync(Guid userId, DatasetItem datasetItem);
 
+    Task<bool> CanViewDocumentAsync(Guid userId, Guid documentId);
+    Task<bool> CanWriteDocumentAsync(Guid userId, Guid documentId);
+
     Task<bool> IsAdminAsync(Guid userId);
-    Task<bool> IsManagerOfOUAsync(Guid userId, Guid ouId);
-    Task<bool> IsManagerOrAboveOfOUAsync(Guid userId, Guid ouId);
-    Task<bool> IsInOUAsync(Guid userId, Guid ouId);
 
     Task<DatasetPermissions> GetEffectivePermissionsAsync(Guid userId, Dataset dataset);
     Task<DatasetPermissions> GetEffectivePermissionsAsync(Guid userId, DatasetItem datasetItem);

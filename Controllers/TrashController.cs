@@ -8,7 +8,7 @@ namespace MarkdownGenQAs.Controllers;
 
 [ApiController]
 [Route("api/v1/admin/trash")]
-[Authorize]
+[Authorize(Roles = "User")]
 public class TrashController : ControllerBase
 {
     private readonly ITrashService _trashService;
@@ -58,7 +58,6 @@ public class TrashController : ControllerBase
 
     private static TrashItemType ParseType(string type) => type.ToLowerInvariant() switch
     {
-        "organization-unit" => TrashItemType.OrganizationUnit,
         "dataset" => TrashItemType.Dataset,
         "folder" => TrashItemType.Folder,
         "document" => TrashItemType.Document,

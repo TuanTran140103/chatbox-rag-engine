@@ -7,8 +7,6 @@ using StackExchange.Redis;
 using MarkdownGenQAs.Application.Interfaces.Services;
 using MarkdownGenQAs.Application.Interfaces.ExternalServices;
 using System.Text.Json;
-using MarkdownGenQAs.Options;
-using MarkdownGenQAs.Helper;
 using MarkdownGenQAs.Utils;
 using MarkdownGenQAs.Infrastructure.Exceptions;
 
@@ -119,19 +117,6 @@ public class OcrResultConsumer : BackgroundService, IAsyncDisposable
     {
         try
         {
-            var trimmed = await db.StreamTrimAsync(StreamKey, 1000);
-            if (trimmed > 0)
-            {
-                _logger.LogInformation("Trimmed {Trimmed} old messages from stream {StreamKey}", trimmed, StreamKey);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to trim stream {StreamKey}", StreamKey);
-        }
-
-        try
-        {
             await db.StreamCreateConsumerGroupAsync(StreamKey, ConsumerGroup, "$", true);
             _logger.LogInformation("Created Redis Stream consumer group: {Group}, starting from latest", ConsumerGroup);
         }
@@ -180,8 +165,14 @@ public class OcrResultConsumer : BackgroundService, IAsyncDisposable
 
             await queue.EnqueueAsync(wrapper);
 
-            _ = _documentWorkers.GetOrAdd(docIdStr, _ =>
+            var existingOrNewWorker = _documentWorkers.GetOrAdd(docIdStr, _ =>
                 Task.Run(async () => await ProcessDocumentQueueAsync(docId.Value, queue, ct, db)));
+
+            if (existingOrNewWorker.IsCompleted)
+            {
+                var newWorker = Task.Run(async () => await ProcessDocumentQueueAsync(docId.Value, queue, ct, db));
+                _documentWorkers.TryUpdate(docIdStr, newWorker, existingOrNewWorker);
+            }
 
             await wrapper.CompletionSource.Task;
         }
@@ -266,11 +257,11 @@ public class OcrResultConsumer : BackgroundService, IAsyncDisposable
         catch (OperationCanceledException) { }
         finally
         {
-            _documentWorkers.TryRemove(docIdStr, out _);
-
             if (queue.IsCompletedAndEmpty)
             {
+                _documentWorkers.TryRemove(docIdStr, out _);
                 _documentQueues.TryRemove(docIdStr, out _);
+                _logger.LogDebug("Cleaned up worker and queue for DocumentId: {DocId}", docIdStr);
             }
         }
     }
@@ -357,9 +348,17 @@ public class OcrResultConsumer : BackgroundService, IAsyncDisposable
             return;
         }
 
+        var mappedStatus = eventBase.Status.ToLower() switch
+        {
+            "started" => "Started",
+            "succeeded" => "Succeeded",
+            "failed" => "Failed",
+            "canceled" => "Canceled",
+            _ => StatusDocument.ProcessingOcr.ToString()
+        };
+
         if (eventBase.Status.Equals("Started", StringComparison.OrdinalIgnoreCase))
         {
-            await _broadcaster.ClearHistoryAsync("ocr", docId);
             await InitJobAsync(docId, uow);
         }
         else if (eventBase.Status.Equals("Succeeded", StringComparison.OrdinalIgnoreCase))
@@ -371,11 +370,11 @@ public class OcrResultConsumer : BackgroundService, IAsyncDisposable
         {
             _logger.LogWarning("OCR {Status} for DocumentId: {DocId}, TaskId: {TaskId}. Message: {Message}",
                 eventBase.Status, docId, eventBase.TaskId, eventBase.Message);
-            await FinalizeJobStatusAsync(docId, eventBase.Status, uow);
+            await FinalizeJobStatusAsync(docId, mappedStatus, uow);
             _taskToDocumentId.TryRemove(eventBase.TaskId, out _);
         }
 
-        await BroadcastProgressAsync(docId, eventBase.Message, eventBase.Status, eventBase.ProcessingTime);
+        await BroadcastProgressAsync(docId, eventBase.Message, mappedStatus, eventBase.ProcessingTime);
     }
 
     private async Task InitJobAsync(Guid docId, IUnitOfWork uow)
@@ -460,7 +459,7 @@ public class OcrResultConsumer : BackgroundService, IAsyncDisposable
             if (doc != null)
             {
                 doc.OcrContent = transformedMarkdown;
-                doc.Status = StatusDocument.Successed;
+                doc.Status = StatusDocument.Succeeded;
                 doc.IsOcred = true;
                 doc.SummaryContent = null;
                 doc.QaSummaryContent = null;
@@ -513,13 +512,6 @@ public class OcrResultConsumer : BackgroundService, IAsyncDisposable
         finally
         {
             _taskToDocumentId.TryRemove(eventBase.TaskId, out _);
-
-            var docIdStr = docId.ToString();
-            if (_documentQueues.TryRemove(docIdStr, out var queue))
-            {
-                queue.Complete();
-                _logger.LogDebug("Completed queue for DocumentId: {DocId}", docId);
-            }
         }
     }
 
@@ -570,7 +562,8 @@ public class OcrResultConsumer : BackgroundService, IAsyncDisposable
             Message = message,
             Status = status,
             ProcessingTime = processingTime,
-            Stage = "OCR"
+            Stage = "OCR",
+            Timestamp = DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss")
         });
     }
 
@@ -578,22 +571,16 @@ public class OcrResultConsumer : BackgroundService, IAsyncDisposable
     {
         const int CleanupIntervalMinutes = 5;
 
-        _logger.LogInformation("Cache cleanup task started. Will run every {Interval} minutes, deleting OCR files older than {OcrExp} minutes and other files older than {DefaultExp} minutes",
-            CleanupIntervalMinutes, DocumentHelper.OcrCacheExpirationMinutes, DocumentHelper.DefaultCacheExpirationMinutes);
+        // Local cache is no longer used. All data is stored in S3.
+        _logger.LogInformation("Cache cleanup skipped - local cache is deprecated.");
 
         while (!ct.IsCancellationRequested)
         {
             try
             {
                 await Task.Delay(TimeSpan.FromMinutes(CleanupIntervalMinutes), ct);
-
-                DocumentHelper.CleanupOldCache();
             }
             catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error during cache cleanup");
-            }
         }
     }
 

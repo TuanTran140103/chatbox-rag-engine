@@ -402,7 +402,11 @@ public class LlmService
                     if (jsonSchema == null)
                         return metadata;
 
-                    var (fixedMetadata, patchedSchema) = MetadataSchemaHelper.CoerceRequiredNulls(metadata, jsonSchema);
+                    var (normalizedMetadata, normalizedChanged) = MetadataSchemaHelper.NormalizeEnumValues(metadata, jsonSchema);
+                    if (normalizedChanged)
+                        _logger.LogDebug("ChatMetadataExtractionAsync normalized enum casing/diacritics");
+
+                    var (fixedMetadata, patchedSchema) = MetadataSchemaHelper.CoerceRequiredNulls(normalizedMetadata, jsonSchema);
                     var (isValid, errorMessage) = MetadataSchemaHelper.ValidateJsonAgainstSchema(fixedMetadata, patchedSchema);
                     if (isValid)
                     {

@@ -1,0 +1,93 @@
+{
+  "name": "Văn bản Tài chính - Ngân hàng",
+  "description": "Template trích xuất metadata cho văn bản pháp luật/quy định trong lĩnh vực tài chính ngân hàng Việt Nam. Áp dụng cho các văn bản do Quốc hội, Chính phủ, Ngân hàng Nhà nước, Bộ Tài chính, UBCKNN và các cơ quan có thẩm quyền ban hành.",
+  "indexKeys": [
+    "documentType",
+    "documentNature",
+    "issueDate"
+  ],
+  "jsonSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "title": "Văn bản Tài chính - Ngân hàng",
+    "description": "Template trích xuất metadata cho văn bản pháp luật/quy định trong lĩnh vực tài chính ngân hàng Việt Nam.",
+    "additionalProperties": false,
+    "properties": {
+      "documentNumber": {
+        "type": "string",
+        "title": "Số hiệu văn bản",
+        "description": "Số ký hiệu chính thức của văn bản. Ví dụ: 01/2023/TT-NHNN, 23/2022/QH15, 15/2024/NĐ-CP",
+        "examples": [
+          "01/2023/TT-NHNN",
+          "23/2022/QH15",
+          "15/2024/NĐ-CP"
+        ]
+      },
+      "title": {
+        "type": "string",
+        "title": "Tên gọi / Tiêu đề",
+        "description": "Tên đầy đủ chính thức của văn bản",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "documentType": {
+        "type": "string",
+        "title": "Loại tài liệu",
+        "description": "Phân loại văn bản theo hệ thống pháp luật Việt Nam",
+        "enum": [
+          "Luật",
+          "Nghị định",
+          "Thông tư",
+          "Quyết định",
+          "Công văn",
+          "Chỉ thị",
+          "Nghị quyết",
+          "other"
+        ]
+      },
+      "documentNature": {
+        "type": "string",
+        "title": "Tính chất văn bản",
+        "description": "Vai trò của văn bản này đối với các văn bản khác trong quan hệ pháp lý",
+        "enum": [
+          "Mới ban hành",
+          "Thay thế",
+          "Sửa đổi",
+          "Bổ sung",
+          "Hướng dẫn thi hành",
+          "Hủy bỏ",
+          "other"
+        ]
+      },
+      "issueDate": {
+        "type": "string",
+        "format": "date",
+        "title": "Ngày ban hành",
+        "description": "Ngày văn bản được ban hành/ký (định dạng ISO 8601: YYYY-MM-DD). Hỗ trợ range filter trên Qdrant (Datetime index)."
+      },
+      "effectiveDate": {
+        "type": "string",
+        "format": "date",
+        "title": "Ngày có hiệu lực",
+        "description": "Ngày văn bản bắt đầu có hiệu lực thi hành (định dạng ISO 8601: YYYY-MM-DD). Để trống nếu không xác định."
+      },
+      "relatedDocuments": {
+        "type": "array",
+        "title": "Văn bản liên quan",
+        "description": "Danh sách số hiệu các văn bản được tham chiếu trong nội dung (bổ sung, sửa đổi, thay thế, bị hủy bỏ). Chỉ liệt kê số hiệu.",
+        "items": {
+          "type": "string"
+        },
+        "examples": [
+          ["01/2020/TT-NHNN", "23/2019/QH15"]
+        ]
+      }
+    },
+    "required": [
+      "title",
+      "documentType",
+      "documentNature",
+      "issueDate"
+    ]
+  }
+}

@@ -8,7 +8,6 @@ namespace MarkdownGenQAs.Controllers;
 
 [ApiController]
 [Route("api/v1/templates")]
-[Authorize]
 public class TemplateMetadataController : ControllerBase
 {
     private readonly ITemplateMetadataService _templateMetadataService;
@@ -19,6 +18,7 @@ public class TemplateMetadataController : ControllerBase
     }
 
     [HttpGet]
+    [Authorize(Roles = "User")]
     public async Task<ActionResult<List<TemplateMetadataListDto>>> GetAll()
     {
         var result = await _templateMetadataService.GetAllAsync();
@@ -26,6 +26,7 @@ public class TemplateMetadataController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
+    [Authorize(Roles = "User")]
     public async Task<ActionResult<TemplateMetadataDetailDto>> GetById(Guid id)
     {
         var result = await _templateMetadataService.GetByIdAsync(id);
@@ -35,7 +36,7 @@ public class TemplateMetadataController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Policy = "AdminOnly")]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<TemplateMetadataDetailDto>> Create([FromBody] CreateTemplateMetadataRequestDto dto)
     {
         var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
@@ -48,7 +49,7 @@ public class TemplateMetadataController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
-    [Authorize(Policy = "AdminOnly")]
+    [Authorize(Roles = "Admin")]
     public async Task<ActionResult<TemplateMetadataDetailDto>> Update(Guid id, [FromBody] UpdateTemplateMetadataRequestDto dto)
     {
         var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
@@ -61,7 +62,7 @@ public class TemplateMetadataController : ControllerBase
     }
 
     [HttpDelete("{id:guid}")]
-    [Authorize(Policy = "AdminOnly")]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id)
     {
         var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);

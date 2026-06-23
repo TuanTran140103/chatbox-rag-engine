@@ -15,7 +15,6 @@ using MarkdownGenQAs.Application.Interfaces.Services;
 using Microsoft.EntityFrameworkCore;
 using MarkdownGenQAs.Infrastructure;
 using Microsoft.Extensions.AI;
-using Microsoft.Agents.AI;
 using OpenAI;
 using Microsoft.Extensions.Options;
 using System.ClientModel;
@@ -36,7 +35,6 @@ public static class DependencyInjection
         services.Configure<DocumentProcessOption>(configuration.GetSection(DocumentProcessOption.NameSection));
         services.Configure<MinioOptions>(configuration.GetSection(MinioOptions.SectionName));
         services.Configure<SystemPrompts>(configuration.GetSection(SystemPrompts.SectionName));
-        services.Configure<InitialSettings>(configuration.GetSection(InitialSettings.SectionName));
         services.AddSingleton(sp => sp.GetRequiredService<IOptions<SystemPrompts>>().Value);
     }
     public static void AddLlmClients(IServiceCollection services, IConfiguration configuration)
@@ -44,7 +42,6 @@ public static class DependencyInjection
         var llmOptions = new LlmProviderOptions();
         configuration.GetSection(LlmProviderOptions.SectionName).Bind(llmOptions);
 
-        // Register the Factory (no interface)
         services.AddSingleton<LlmClientFactory>();
 
         foreach (var providerKv in llmOptions.Providers)
@@ -60,7 +57,6 @@ public static class DependencyInjection
                 var apiKey = !string.IsNullOrEmpty(model.ApiKey) ? model.ApiKey : settings.ApiKey;
                 if (string.IsNullOrEmpty(apiKey))
                 {
-                    // apiKey = Environment.GetEnvironmentVariable($"LlmProviders__{providerName}__ApiKey") ?? string.Empty;
                     apiKey = Environment.GetEnvironmentVariable($"LlmProviders__{providerName}__ApiKey") ?? string.Empty;
                 }
 
@@ -104,8 +100,6 @@ public static class DependencyInjection
         services.AddScoped<IDatasetRepository, DatasetRepository>();
         services.AddScoped<IDatasetItemRepository, DatasetItemRepository>();
         services.AddScoped<IAccessShareRepository, AccessShareRepository>();
-        services.AddScoped<IOrganizationUnitRepository, OrganizationUnitRepository>();
-        services.AddScoped<IUserPositionRepository, UserPositionRepository>();
 
         services.AddScoped<IUnitOfWork, UnitOfWork>();
     }
@@ -115,6 +109,7 @@ public static class DependencyInjection
         services.AddScoped<NotificationService>();
         services.AddScoped<IGenQaBackgroundJobService, GenQaBackgroundJobService>();
         services.AddScoped<IDocumentIndexingBackgroundJobService, DocumentIndexingBackgroundJobService>();
+        services.AddScoped<OcrRecoveryService>();
 
         return services;
     }
@@ -163,7 +158,6 @@ public static class DependencyInjection
         services.AddSingleton<AuditEntityInterceptor>();
 
         // Register DbContext with audit interceptor + Npgsql connection retry on transient failure
-        // AddDbContextPool reuses DbContext instances across requests (reduces allocation overhead)
         services.AddDbContextPool<ApplicationContext>((sp, options) =>
         {
             options.UseNpgsql(connectionString);
@@ -186,8 +180,8 @@ public static class DependencyInjection
         AddHttpClients(services, configuration);
 
         // Background services
-        services.AddHostedService<OcrResultConsumer>();
         services.AddHostedService<SystemInitializationService>();
+        services.AddHostedService<OcrResultConsumer>();
 
         // Qdrant
         services.AddSingleton<IQdrantService, QdrantService>();
@@ -214,7 +208,7 @@ public static class DependencyInjection
         services.AddSingleton<IConcurrencyService, RedisConcurrencyService>();
         services.AddSingleton<IAppCacheService, RedisAppCacheService>();
 
-        // LLM Service (concrete, no interface abstraction)
+        // LLM Service
         services.AddSingleton<LlmService>();
 
         // AWS
@@ -225,15 +219,10 @@ public static class DependencyInjection
         services.AddScoped<DocumentService>();
         services.AddScoped<GenQaPipelineRunner>();
         services.AddScoped<IAccessControlService, AccessControlService>();
-        services.AddScoped<AuthService>();
-
-        // Admin Services
-        services.AddScoped<AdminOrgService>();
-        services.AddScoped<AdminStatsService>();
-        services.AddScoped<AdminDatasetService>();
 
         // Template Metadata Services
         services.AddScoped<ITemplateMetadataService, TemplateMetadataService>();
+        services.AddScoped<TemplateMetadataSeeder>();
 
         // User Dataset Services
         services.AddScoped<DatasetService>();
@@ -241,12 +230,14 @@ public static class DependencyInjection
         // Trash
         services.AddScoped<ITrashService, TrashService>();
 
+        // MinIO Admin
+        services.AddScoped<IMinioAdminService, MinioAdminService>();
+
+        // Orphan File Cleanup
+        services.AddScoped<IOrphanFileCleanupService, OrphanFileCleanupService>();
+
         // AI Search Service
         services.AddScoped<ISearchService, SearchService>();
-
-        // User Services
-        services.AddScoped<UserService>();
-        services.AddScoped<UserInformationService>();
 
         return services;
     }

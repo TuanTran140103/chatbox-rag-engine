@@ -10,9 +10,3 @@ public enum DatasetPermissions
     Collaborate = Read | Update,
     FullControl = Read | Update | Delete | Share
 }
-
-public enum OrganizationRole
-{
-    Staff,
-    Manager
-}

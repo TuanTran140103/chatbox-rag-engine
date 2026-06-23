@@ -120,77 +120,9 @@ public class DocumentService
         }
     }
 
-    public async Task<ServiceResult<DocumentUploadResponseDto>> UploadAsync(DocumentUploadRequestDto dto)
+    public async Task<List<string>> GetSupportedModelsAsync()
     {
-        try
-        {
-            if (dto.FileStream == null)
-                return new ServiceResult<DocumentUploadResponseDto> { IsSuccess = false, ErrorMessage = "File stream is required" };
-
-            if (!dto.FileStream.CanSeek)
-            {
-                var buffered = new MemoryStream();
-                await dto.FileStream.CopyToAsync(buffered);
-                buffered.Position = 0;
-                dto.FileStream = buffered;
-            }
-
-            var extension = Path.GetExtension(dto.FileName).ToLowerInvariant();
-            if (extension != ".pdf") return new ServiceResult<DocumentUploadResponseDto> { IsSuccess = false, ErrorMessage = "Only PDF files are supported" };
-
-            var (isValid, errorMessage) = await ValidateFileUtil.ValidatePdfAsync(dto.FileStream, dto.FileName);
-            if (!isValid)
-                return new ServiceResult<DocumentUploadResponseDto> { IsSuccess = false, ErrorMessage = errorMessage };
-
-            var existingFile = (await _uow.Documents.FindAsync(f => f.FileName == dto.FileName)).FirstOrDefault();
-            if (existingFile != null)
-            {
-                return new ServiceResult<DocumentUploadResponseDto> { IsSuccess = false, ErrorMessage = $"A file with name '{dto.FileName}' already exists." };
-            }
-
-            var ocrFile = new Document
-            {
-                FileName = dto.FileName,
-                ObjectKeyFilePdf = "",
-                DatasetItemId = dto.CategoryId,
-                UserId = null,
-                Status = StatusDocument.Uploaded,
-                ProcessingTimeOcr = 0
-            };
-
-            await _uow.Documents.AddAsync(ocrFile);
-            await _uow.SaveChangesAsync();
-
-            using var memoryStream = new MemoryStream();
-            dto.FileStream.Position = 0;
-            await dto.FileStream.CopyToAsync(memoryStream);
-            memoryStream.Position = 0;
-
-            using var s3Stream = new MemoryStream();
-            using var cacheStream = new MemoryStream();
-            await memoryStream.CopyToAsync(s3Stream);
-            memoryStream.Position = 0;
-            await memoryStream.CopyToAsync(cacheStream);
-
-            s3Stream.Position = 0;
-            cacheStream.Position = 0;
-
-            var s3Task = _s3Service.UploadFileAsync(s3Stream, dto.FileName, S3BucketName.OCRUploadPdf, dto.ContentType ?? "application/pdf");
-            var cacheTask = DocumentHelper.SaveToCacheAsync(ocrFile.Id, DocumentHelper.BucketUploads, ".pdf", cacheStream);
-
-            await Task.WhenAll(s3Task, cacheTask);
-
-            ocrFile.ObjectKeyFilePdf = await s3Task;
-            _uow.Documents.Update(ocrFile);
-            await _uow.SaveChangesAsync();
-
-            return new ServiceResult<DocumentUploadResponseDto> { IsSuccess = true, Data = MapToUploadResponseDto(ocrFile) };
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "File upload error");
-            return new ServiceResult<DocumentUploadResponseDto> { IsSuccess = false, ErrorMessage = "Internal server error" };
-        }
+        return await _ocrService.GetSupportedModelsAsync();
     }
 
     public async Task<ServiceResult<OcrProcessResponse>> ProcessOCR(Guid documentId, string? modelId = null)
@@ -215,50 +147,35 @@ public class DocumentService
 
             var effectiveModelId = !string.IsNullOrEmpty(modelId) ? modelId : _defaultOcrModelId;
 
-            Stream? fileStream = null;
-            if (DocumentHelper.Exists(document.Id, DocumentHelper.BucketUploads, ".pdf"))
+            await _broadcaster.ClearHistoryAsync("ocr", document.Id);
+
+            _logger.LogInformation("Sending OCR request with S3 key for document {Id}, bucket={Bucket}, key={Key}",
+                documentId, S3BucketName.OCRUploadPdf, document.ObjectKeyFilePdf);
+
+            var ocrResponse = await _ocrService.ProcessFromS3Async(
+                S3BucketName.OCRUploadPdf, document.ObjectKeyFilePdf, effectiveModelId);
+
+            var job = await _uow.DocumentJobs.GetByDocumentIdAsync(document.Id);
+            if (job == null)
             {
-                fileStream = DocumentHelper.GetContent(document.Id, DocumentHelper.BucketUploads, ".pdf");
-                _logger.LogInformation("Using cached PDF for document {Id}", documentId);
+                job = new DocumentJob { DocumentId = document.Id, OcrJobId = ocrResponse.TaskId, StatusOcr = StatusJob.Pending };
+                await _uow.DocumentJobs.AddAsync(job);
             }
             else
             {
-                fileStream = await _s3Service.DownloadFileAsync(document.ObjectKeyFilePdf, S3BucketName.OCRUploadPdf);
-                _logger.LogInformation("Downloaded PDF from S3 for document {Id}", documentId);
+                job.OcrJobId = ocrResponse.TaskId;
+                job.StatusOcr = StatusJob.Pending;
+                job.StatusIndexing = StatusJob.None;
+                job.IndexingJobId = null;
+                _uow.DocumentJobs.Update(job);
             }
+            await _uow.SaveChangesAsync();
 
-            if (fileStream == null)
-                return new ServiceResult<OcrProcessResponse> { IsSuccess = false, ErrorMessage = "Could not retrieve file" };
+            document.Status = StatusDocument.ProcessingOcr;
+            _uow.Documents.Update(document);
+            await _uow.SaveChangesAsync();
 
-            using (fileStream)
-            {
-                var ocrResponse = await _ocrService.ProcessAsync(fileStream, document.FileName, "application/pdf", effectiveModelId);
-
-                var job = await _uow.DocumentJobs.GetByDocumentIdAsync(document.Id);
-                if (job == null)
-                {
-                    job = new DocumentJob { DocumentId = document.Id, OcrJobId = ocrResponse.TaskId, StatusOcr = StatusJob.Pending };
-                    await _uow.DocumentJobs.AddAsync(job);
-                }
-                else
-                {
-                    job.OcrJobId = ocrResponse.TaskId;
-                    job.StatusOcr = StatusJob.Pending;
-                    job.StatusIndexing = StatusJob.None;
-                    job.IndexingJobId = null;
-                    _uow.DocumentJobs.Update(job);
-                }
-                await _uow.SaveChangesAsync();
-
-                document.Status = StatusDocument.ProcessingOcr;
-                _uow.Documents.Update(document);
-                await _uow.SaveChangesAsync();
-
-                // Clear stale SSE messages from previous runs
-                await _broadcaster.ClearHistoryAsync("ocr", document.Id);
-
-                return new ServiceResult<OcrProcessResponse> { IsSuccess = true, Data = ocrResponse };
-            }
+            return new ServiceResult<OcrProcessResponse> { IsSuccess = true, Data = ocrResponse };
         }
         catch (OcrApiException ex)
         {
@@ -519,8 +436,7 @@ public class DocumentService
             {
                 case "original":
                     if (string.IsNullOrEmpty(f.ObjectKeyFilePdf)) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "Original file not found" };
-                    Stream? originalStream = DocumentHelper.GetContent(f.Id, DocumentHelper.BucketUploads, ".pdf")
-                        ?? await _s3Service.DownloadFileAsync(f.ObjectKeyFilePdf, S3BucketName.OCRUploadPdf);
+                    var originalStream = await _s3Service.DownloadFileAsync(f.ObjectKeyFilePdf, S3BucketName.OCRUploadPdf);
 
                     if (originalStream == null) return new ServiceResult<(Stream, string, string)> { IsSuccess = false, ErrorMessage = "Original file not found in storage" };
                     return new ServiceResult<(Stream, string, string)> { IsSuccess = true, Data = (originalStream, "application/pdf", f.FileName) };
@@ -551,6 +467,16 @@ public class DocumentService
         }
     }
 
+    public async Task<string?> GetPresignedDownloadUrlAsync(Guid id)
+    {
+        var f = await _uow.Documents.GetByIdAsync(id);
+        if (f == null || string.IsNullOrEmpty(f.ObjectKeyFilePdf))
+            return null;
+
+        return await _s3Service.GeneratePresignedDownloadUrlAsync(
+            f.ObjectKeyFilePdf, S3BucketName.OCRUploadPdf, TimeSpan.FromMinutes(15));
+    }
+
     private async Task<ServiceResult<(Stream Stream, string ContentType, string FileName)>> DownloadAllAsync(Document f)
     {
         var baseName = Path.GetFileNameWithoutExtension(f.FileName);
@@ -560,8 +486,7 @@ public class DocumentService
         {
             if (!string.IsNullOrEmpty(f.ObjectKeyFilePdf))
             {
-                var originalStream = DocumentHelper.GetContent(f.Id, DocumentHelper.BucketUploads, ".pdf")
-                    ?? await _s3Service.DownloadFileAsync(f.ObjectKeyFilePdf, S3BucketName.OCRUploadPdf);
+                var originalStream = await _s3Service.DownloadFileAsync(f.ObjectKeyFilePdf, S3BucketName.OCRUploadPdf);
 
                 if (originalStream != null)
                 {
@@ -764,15 +689,4 @@ public class DocumentService
         };
     }
 
-    private DocumentUploadResponseDto MapToUploadResponseDto(Document f)
-    {
-        return new DocumentUploadResponseDto
-        {
-            Id = f.Id,
-            FileName = f.FileName,
-            Status = f.Status.ToString(),
-            CategoryId = f.DatasetItemId,
-            CreatedAt = f.CreatedAt
-        };
-    }
 }

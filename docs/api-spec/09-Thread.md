@@ -4,6 +4,14 @@ Base URL: `/api/v1/threads`
 
 Tất cả API trong nhóm này yêu cầu **đăng nhập** (`[Authorize]`), không yêu cầu Admin.
 
+### Ownership
+
+Mỗi thread thuộc về **một user duy nhất** (gán tự động qua `userId` từ claims khi tạo). User chỉ có thể:
+- Xem danh sách thread của chính mình
+- Xem / Sửa / Xoá thread của chính mình
+
+Nếu thread không thuộc về user hiện tại hoặc không tồn tại, API trả về **404**.
+
 Thread dùng để quản lý các phiên hội thoại/hỏi đáp từ service ngoài (ví dụ: OpenAI, Claude), hỗ trợ soft delete và tìm kiếm theo tiêu đề. `threadId` là ID từ service ngoài do client truyền lên.
 
 ---
@@ -125,7 +133,7 @@ Như Get Thread Detail.
 
 ## 4. Update Thread
 
-Cập nhật tiêu đề thread. Chỉ cho phép update `title`.
+Cập nhật tiêu đề thread. Chỉ cho phép update `title`. Chỉ thread của user hiện tại mới có thể cập nhật.
 
 ```
 PUT /api/v1/threads/{id:guid}
@@ -168,7 +176,7 @@ PUT /api/v1/threads/{id:guid}
 
 ## 5. Delete Thread
 
-Xoá mềm thread (set `IsDeleted = true`).
+Xoá thread (soft delete). Chỉ thread của user hiện tại mới có thể xoá.
 
 ```
 DELETE /api/v1/threads/{id:guid}
@@ -185,3 +193,15 @@ Không có nội dung trả về.
   "error": "Thread not found"
 }
 ```
+
+---
+
+## Common Error Responses
+
+| Status | Description |
+|--------|-------------|
+| 401 | Unauthorized — Chưa đăng nhập |
+| 404 | Thread không tồn tại hoặc không thuộc về user hiện tại |
+| 500 | Internal Server Error — Lỗi hệ thống |
+
+*(Không có 403 — thread không thuộc về user trả về 404 để không leak thông tin)*

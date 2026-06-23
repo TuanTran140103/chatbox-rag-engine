@@ -202,7 +202,7 @@ public class GenQaBackgroundJobService : IGenQaBackgroundJobService
         {
             await UpdateJobLogsAsync(document.Id);
 
-            document.Status = StatusDocument.Successed;
+            document.Status = StatusDocument.Succeeded;
             document.ProcessingTimeGenQa = (int)sw.Elapsed.TotalSeconds;
             document.IsQaGenerated = true;
             _uow.Documents.Update(document);

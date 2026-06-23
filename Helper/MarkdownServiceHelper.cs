@@ -52,7 +52,7 @@ public class MarkdownServiceHelper
         foreach (var chunk in chunks)
         {
             Console.WriteLine($"{chunk.Type} - {chunk.TokensCount} tokens");
-            Console.WriteLine($"Title Hyrarchy header: {chunk.TittleHirarchy}");
+            Console.WriteLine($"Title Hyrarchy header: {chunk.TitleHierarchy}");
             if (chunk.Content.Length > maxChar)
             {
 

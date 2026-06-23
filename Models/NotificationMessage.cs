@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 
 namespace MarkdownGenQAs.Models;
 
@@ -15,8 +16,6 @@ public record NotificationMessage
     /// </summary>
     public string Stage { get; set; } = "OCR";
 
-    /// <summary>
-    /// Stream entry ID (set by StreamBroadcaster, null for legacy broadcaster)
-    /// </summary>
+    [JsonIgnore]
     public string? EntryId { get; set; }
 }

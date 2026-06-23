@@ -5,13 +5,10 @@ namespace MarkdownGenQAs.Models.Enum;
 
 public enum TypeChunk
 {
-    [Description("Table")]
-    [JsonStringEnumMemberName("table")]
+    [JsonStringEnumMemberName("Table")]
     Table,
-    [Description("Text a chunk")]
-    [JsonStringEnumMemberName("allContent")]
+    [JsonStringEnumMemberName("Text")]
     Text,
-    [Description("Summary")]
-    [JsonStringEnumMemberName("summary")]
+    [JsonStringEnumMemberName("Summary")]
     Summary
 }

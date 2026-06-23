@@ -1,6 +1,6 @@
 using System.Security.Claims;
 using MarkdownGenQAs.Application.Interfaces.Services;
-using MarkdownGenQAs.Models.Constants;
+using MarkdownGenQAs.Utils;
 
 namespace MarkdownGenQAs.Infrastructure.Services;
 
@@ -21,6 +21,11 @@ public class AuditUserAccessor : IAuditUserAccessor
 
     public bool IsAdmin()
     {
-        return _httpContextAccessor.HttpContext?.User.IsInRole(RoleNames.Admin) ?? false;
+        return _httpContextAccessor.HttpContext?.User.IsInRole("Admin") ?? false;
+    }
+
+    public List<Guid> GetUserDepartmentIds()
+    {
+        return _httpContextAccessor.HttpContext?.User.GetDepartmentIds() ?? [];
     }
 }

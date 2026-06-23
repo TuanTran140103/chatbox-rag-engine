@@ -3,14 +3,12 @@ using System.Text.Json;
 using MarkdownGenQAs.Models.Entities;
 using MarkdownGenQAs.Models.Enum;
 using MarkdownGenQAs.Models.Interfaces;
-using Microsoft.AspNetCore.Identity;
-using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace MarkdownGenQAs.Infrastructure;
 
-public class ApplicationContext : IdentityDbContext<ApplicationUser, ApplicationRole, Guid>
+public class ApplicationContext : DbContext
 {
     public ApplicationContext(DbContextOptions<ApplicationContext> options) : base(options)
     {
@@ -22,8 +20,6 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
     public DbSet<AccessShare> AccessShares { get; set; }
     public DbSet<LogMessage> LogMessages { get; set; }
     public DbSet<DocumentJob> DocumentJobs { get; set; }
-    public DbSet<OrganizationUnit> OrganizationUnits { get; set; }
-    public DbSet<UserPosition> UserPositions { get; set; }
     public DbSet<SystemStatistics> SystemStatistics { get; set; }
     public DbSet<TemplateMetadata> TemplateMetadatas { get; set; }
     public DbSet<ConversationThread> Threads { get; set; }
@@ -33,92 +29,6 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
         base.OnModelCreating(modelBuilder);
 
         modelBuilder.HasPostgresExtension("pg_trgm");
-
-        modelBuilder.Entity<ApplicationUser>(entity =>
-        {
-            entity.ToTable("Users");
-            entity.HasIndex(e => e.NormalizedUserName).HasDatabaseName("UserNameIndex").IsUnique();
-            entity.HasIndex(e => e.NormalizedEmail).HasDatabaseName("EmailIndex");
-            entity.HasIndex(e => e.NormalizedEmail)
-                .HasDatabaseName("IX_Users_NormalizedEmail_Trgm")
-                .HasMethod("gin")
-                .HasOperators("gin_trgm_ops");
-
-            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP");
-            entity.HasIndex(e => e.CreatedAt);
-        });
-
-        modelBuilder.Entity<ApplicationRole>(entity =>
-        {
-            entity.ToTable("Roles");
-            entity.HasIndex(e => e.NormalizedName).HasDatabaseName("RoleNameIndex").IsUnique();
-        });
-
-        modelBuilder.Entity<IdentityUserRole<Guid>>(entity =>
-        {
-            entity.ToTable("UserRoles");
-            entity.HasKey(e => new { e.UserId, e.RoleId });
-        });
-
-        modelBuilder.Entity<IdentityUserClaim<Guid>>(entity =>
-        {
-            entity.ToTable("UserClaims");
-        });
-
-        modelBuilder.Entity<IdentityUserLogin<Guid>>(entity =>
-        {
-            entity.ToTable("UserLogins");
-            entity.HasKey(e => new { e.ProviderKey, e.LoginProvider });
-        });
-
-        modelBuilder.Entity<IdentityUserToken<Guid>>(entity =>
-        {
-            entity.ToTable("UserTokens");
-            entity.HasKey(e => new { e.UserId, e.LoginProvider, e.Name });
-        });
-
-        modelBuilder.Entity<IdentityRoleClaim<Guid>>(entity =>
-        {
-            entity.ToTable("RoleClaims");
-        });
-
-        modelBuilder.Entity<OrganizationUnit>(entity =>
-        {
-            entity.ToTable("OrganizationUnits");
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Name).IsRequired().HasMaxLength(255);
-            entity.Property(e => e.Code).HasMaxLength(50);
-            entity.Property(e => e.Path).IsRequired().HasMaxLength(1000);
-
-            entity.HasOne(e => e.Parent)
-                  .WithMany(e => e.Children)
-                  .HasForeignKey(e => e.ParentId)
-                  .OnDelete(DeleteBehavior.Restrict);
-        });
-
-        modelBuilder.Entity<UserPosition>(entity =>
-        {
-            entity.ToTable("UserPositions");
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Role).HasConversion<string>().IsRequired();
-
-            entity.HasIndex(e => new { e.UserId, e.OUId }).IsUnique();
-
-            entity.HasOne(e => e.User)
-                  .WithMany()
-                  .HasForeignKey(e => e.UserId)
-                  .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasOne(e => e.OrganizationUnit)
-                  .WithMany(e => e.UserPositions)
-                  .HasForeignKey(e => e.OUId)
-                  .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasOne(e => e.Manager)
-                  .WithMany()
-                  .HasForeignKey(e => e.ManagerId)
-                  .OnDelete(DeleteBehavior.SetNull);
-        });
 
         modelBuilder.Entity<Dataset>(entity =>
         {
@@ -130,16 +40,6 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
             entity.HasIndex(e => e.Name)
                   .HasMethod("gin")
                   .HasOperators("gin_trgm_ops");
-
-            entity.HasOne(e => e.Owner)
-                  .WithMany()
-                  .HasForeignKey(e => e.OwnerUserId)
-                  .OnDelete(DeleteBehavior.Restrict);
-
-            entity.HasOne(e => e.OrganizationUnit)
-                  .WithMany(e => e.Datasets)
-                  .HasForeignKey(e => e.OUId)
-                  .OnDelete(DeleteBehavior.Restrict);
 
             entity.HasOne(e => e.TemplateMetadata)
                   .WithMany(e => e.Datasets)
@@ -181,7 +81,7 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
             entity.HasKey(e => e.Id);
             entity.Property(e => e.PermissionMask).HasConversion<string>().IsRequired();
 
-            entity.HasIndex(e => new { e.DatasetId, e.DatasetItemId, e.ShareToUserId, e.ShareToOUId })
+            entity.HasIndex(e => new { e.DatasetId, e.DatasetItemId, e.ShareToUserId, e.ShareToDepartmentId })
                   .IsUnique()
                   .HasFilter("\"DatasetItemId\" IS NOT NULL");
 
@@ -194,21 +94,6 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
                   .WithMany()
                   .HasForeignKey(p => p.DatasetItemId)
                   .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasOne(p => p.ShareToUser)
-                  .WithMany()
-                  .HasForeignKey(p => p.ShareToUserId)
-                  .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasOne(p => p.ShareToOU)
-                  .WithMany()
-                  .HasForeignKey(p => p.ShareToOUId)
-                  .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasOne(p => p.Grantor)
-                  .WithMany()
-                  .HasForeignKey(p => p.GrantedBy)
-                  .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<Document>(entity =>
@@ -231,11 +116,6 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
             entity.HasIndex(e => e.FileName)
                   .HasMethod("gin")
                   .HasOperators("gin_trgm_ops");
-
-            entity.HasOne(e => e.User)
-                  .WithMany()
-                  .HasForeignKey(e => e.UserId)
-                  .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<LogMessage>(entity =>
@@ -323,12 +203,7 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
             entity.Property(e => e.TotalDocuments).HasDefaultValue(0);
             entity.Property(e => e.TotalStorageUsage).HasDefaultValue(0L);
 
-            entity.HasOne(e => e.OU)
-                  .WithMany()
-                  .HasForeignKey(e => e.OUId)
-                  .OnDelete(DeleteBehavior.Cascade);
-
-            entity.HasIndex(e => e.OUId);
+            entity.HasIndex(e => e.DepartmentId);
         });
 
         modelBuilder.Entity<TemplateMetadata>(entity =>
@@ -356,11 +231,6 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
             entity.Property(e => e.ThreadId).IsRequired().HasMaxLength(200);
             entity.Property(e => e.Title).IsRequired().HasMaxLength(500);
 
-            entity.HasOne(e => e.User)
-                  .WithMany()
-                  .HasForeignKey(e => e.UserId)
-                  .OnDelete(DeleteBehavior.Cascade);
-
             entity.HasIndex(e => e.CreatedAt);
             entity.HasIndex(e => e.ThreadId).IsUnique();
             entity.HasIndex(e => e.Title)
@@ -372,7 +242,6 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
         {
             var clrType = entityType.ClrType;
 
-            // Cấu hình IAuditTime
             if (typeof(IAuditTime).IsAssignableFrom(clrType))
             {
                 var entity = modelBuilder.Entity(clrType);
@@ -380,7 +249,6 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
                 entity.Property("UpdatedAt").IsRequired();
             }
 
-            // Cấu hình IAuditUser
             if (typeof(IAuditUser).IsAssignableFrom(clrType))
             {
                 var entity = modelBuilder.Entity(clrType);
@@ -388,14 +256,12 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
                 entity.Property("ModifiedBy").IsRequired(false);
             }
 
-            // Cấu hình IAuditDelete - Áp dụng Soft Delete Query Filter
             if (typeof(IAuditDelete).IsAssignableFrom(clrType))
             {
                 var entity = modelBuilder.Entity(clrType);
                 entity.Property("DeletedBy").IsRequired(false);
                 entity.Property("IsDeleted").HasDefaultValue(false);
 
-                // Sử dụng Reflection để gọi hàm Generic giúp code dễ đọc hơn
                 var method = typeof(ApplicationContext)
                     .GetMethod(nameof(SetSoftDeleteFilter), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
                     ?.MakeGenericMethod(clrType);
@@ -410,6 +276,4 @@ public class ApplicationContext : IdentityDbContext<ApplicationUser, Application
     {
         modelBuilder.Entity<TEntity>().HasQueryFilter(e => !e.IsDeleted);
     }
-
-    // Note: UpdateTimestamps() and SaveChanges overrides removed - handled by AuditEntityInterceptor
 }

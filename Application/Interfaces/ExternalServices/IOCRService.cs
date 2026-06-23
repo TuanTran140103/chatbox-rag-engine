@@ -1,5 +1,4 @@
 using MarkdownGenQAs.Infrastructure.Exceptions;
-using MarkdownGenQAs.Models.Enum;
 using System.Text.Json.Serialization;
 
 namespace MarkdownGenQAs.Application.Interfaces.ExternalServices;
@@ -12,17 +11,11 @@ public interface IOCRService
     Task<bool> PingAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Gọi OCR API để xử lý file.
-    /// Ném OcrApiException nếu API trả về lỗi.
+    /// Lấy danh sách model OCR được hỗ trợ.
+    /// GET /api/ocr/supported-models
     /// </summary>
-    Task<OcrProcessResponse> ProcessAsync(IFormFile file, string modelId = "deepseekocr");
-    
-    /// <summary>
-    /// Gọi OCR API để xử lý file từ stream.
-    /// Ném OcrApiException nếu API trả về lỗi.
-    /// </summary>
-    Task<OcrProcessResponse> ProcessAsync(Stream fileStream, string fileName, string contentType, string modelId = "deepseekocr");
-    
+    Task<List<string>> GetSupportedModelsAsync();
+
     /// <summary>
     /// Lấy kết quả markdown từ OCR API.
     /// Ném OcrApiException nếu API trả về lỗi.
@@ -36,11 +29,11 @@ public interface IOCRService
     Task<string?> CancelJobAsync(string taskId);
 
     /// <summary>
-    /// Submit file PDF lên OCR service để xử lý.
-    /// Theo API mới: POST /api/ocr/process với multipart/form-data
-    /// Fields: File (IFormFile), ModelId (string)
+    /// Gửi request OCR với bucket name và object key.
+    /// OCR server sẽ đọc file trực tiếp từ MinIO S3.
+    /// POST /api/ocr/process với JSON body { bucket, objectKey, modelId }
     /// </summary>
-    Task<OcrProcessResponse> SubmitPdfAsync(Stream pdfStream, string fileName, string modelId = "deepseekocr");
+    Task<OcrProcessResponse> ProcessFromS3Async(string bucketName, string objectKey, string modelId = "deepseekocr");
 }
 
 public class OcrProcessResponse

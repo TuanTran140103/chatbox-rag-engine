@@ -28,7 +28,6 @@ public class DocumentJobRepository : GenericRepository<DocumentJob>, IDocumentJo
     public async Task<DocumentJob?> GetByDocumentIdAsync(Guid documentId)
     {
         return await _dbSet
-            .Include(j => j.Document)
             .FirstOrDefaultAsync(j => j.DocumentId == documentId);
     }
 

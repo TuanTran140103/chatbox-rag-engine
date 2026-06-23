@@ -89,7 +89,7 @@ public class GenQAsService
         {
             string path = Path.Combine(BASE_DIR, _systemPrompts.GenQAsTable.PathTemplatePrompt);
             string templatePrompt = await File.ReadAllTextAsync(path, cancellationToken);
-            var prompt = string.Format(templatePrompt, nameFile, summaryDocument, chunkInfo.Title, chunkInfo.TittleHirarchy, chunkInfo.Content);
+            var prompt = string.Format(templatePrompt, nameFile, summaryDocument, chunkInfo.Title, chunkInfo.TitleHierarchy, chunkInfo.Content);
 
             List<ChatMessage> messagesRequest = new List<ChatMessage>()
             {
@@ -114,7 +114,7 @@ public class GenQAsService
     {
         string path = Path.Combine(BASE_DIR, _systemPrompts.GenQAsCombined.PathTemplatePrompt);
         string templatePrompt = await File.ReadAllTextAsync(path, cancellationToken);
-        string prompt = string.Format(templatePrompt, nameFile, summaryDocument, chunkInfo.Title, chunkInfo.TittleHirarchy, chunkInfo.Content);
+        string prompt = string.Format(templatePrompt, nameFile, summaryDocument, chunkInfo.Title, chunkInfo.TitleHierarchy, chunkInfo.Content);
 
         List<ChatMessage> messagesRequest = new List<ChatMessage>()
         {

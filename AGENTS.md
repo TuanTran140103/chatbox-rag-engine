@@ -36,44 +36,17 @@ The app **will not start** without these running locally:
 
 ### Entity Relationship Overview
 ```
-OrganizationUnit (OU)
-  ├── UserPosition (user ↔ OU relationship)
-  ├── Dataset (neo at OU)
+Department
+  ├── Dataset (attached to Department)
   │     ├── DatasetItem (folder/document tree)
   │     │     └── Document (actual file)
   │     └── AccessShare (granular permissions)
-  └── (Self-referencing hierarchy via ParentId)
 ```
 
 ### Core Entities
 
-#### OrganizationUnit
-Cây phân cấp tổ chức (Materialized Path pattern)
-```csharp
-public class OrganizationUnit : BaseEntity
-{
-    public string Name { get; set; }           // Tên phòng/ban
-    public string? Code { get; set; }          // Mã code (VD: "IT", "HR")
-    public Guid? ParentId { get; set; }        // OU cha
-    public string Path { get; set; }            // Materialized path: "/rootId/childId/..."
-    public int Level { get; set; }             // Độ sâu trong cây
-}
-```
-
-#### UserPosition
-User thuộc về OU nào, với vai trò gì
-```csharp
-public class UserPosition : BaseEntity
-{
-    public Guid UserId { get; set; }           // User
-    public Guid OUId { get; set; }             // OU mà user thuộc về
-    public OrganizationRole Role { get; set; } // Staff = 0, Manager = 1
-    public bool IsPrimary { get; set; }         // Vị trí chính của user
-}
-```
-
 #### Dataset
-Dataset neo tại một OU, chứa cây thư mục và documents
+Dataset attached to a Department, contains folder/document tree
 ```csharp
 public class Dataset : BaseEntity
 {
@@ -82,8 +55,7 @@ public class Dataset : BaseEntity
     public int CountDocument { get; set; }         // Số documents
 
     public Guid OwnerUserId { get; set; }          // Chủ sở hữu dataset
-    public Guid? OUId { get; set; }                // OU mà dataset thuộc về
-    public bool IsPublicToUnit { get; set; }      // Tự động share Read cho OU + con
+    public Guid? DepartmentId { get; set; }        // Department mà dataset thuộc về
 }
 ```
 
@@ -137,7 +109,7 @@ public class AccessShare : BaseEntity
     public Guid? DatasetItemId { get; set; }               // NULL = share cả dataset, NOT NULL = share lẻ item
 
     public Guid? ShareToUserId { get; set; }              // Share cho user cụ thể
-    public Guid? ShareToOUId { get; set; }                 // Share cho cả OU
+    public Guid? ShareToDepartmentId { get; set; }        // Share cho cả Department
 
     public DatasetPermissions PermissionMask { get; set; }  // Bitwise permissions
     public Guid GrantedBy { get; set; }                    // Ai share
@@ -170,17 +142,17 @@ EffectiveMask = (Default Permissions) | (Shared Permissions)
 
 Default Permissions:
 - Owner của Dataset: FullControl (15)
-- Manager của OU mà Dataset thuộc về: FullControl (15)
-- Manager cấp trên (qua Path): Read (1)
-- User cùng OU + Dataset.IsPublicToUnit=true: Read (1)
+- Manager của Department mà Dataset thuộc về: Read (1)
 
 Shared Permissions:
-- Từ AccessShares, ưu tiên quyền cao nhất nếu trùng lặp
+- Từ AccessShares (ShareToUserId hoặc ShareToDepartmentId), ưu tiên quyền cao nhất nếu trùng lặp
 ```
 
-### Visibility Rules
-- **Staff**: Chỉ thấy người trong cùng OU
-- **Manager**: Thấy OU mình, các OU con, Manager cấp trên và Manager cùng cấp
+### Document-Level Authorization
+Tất cả endpoints trong DocumentController phải kiểm tra quyền trước khi trả dữ liệu:
+- **Read operations** (view detail, download, xem content): Check `CanViewDocumentAsync`
+- **Write operations** (OCR, indexing, update metadata): Check `CanWriteDocumentAsync` (dựa trên Dataset permissions)
+- **Admin operations** (admin panel, audit): Check `IsAdminAsync`
 
 ---
 
@@ -234,6 +206,9 @@ public interface IAccessControlService
 
     Task<bool> CanViewDatasetItemAsync(Guid userId, DatasetItem datasetItem);
     Task<bool> CanWriteDatasetItemAsync(Guid userId, DatasetItem datasetItem);
+
+    Task<bool> CanViewDocumentAsync(Guid userId, Guid documentId);
+    Task<bool> CanWriteDocumentAsync(Guid userId, Guid documentId);
 
     Task<List<Guid>> GetAccessibleDatasetIdsAsync(Guid userId);
     Task<List<Guid>> GetAccessibleDocumentIdsAsync(Guid userId); // For RAG filtering

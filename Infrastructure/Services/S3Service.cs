@@ -4,6 +4,7 @@ using Amazon.S3.Util;
 using MarkdownGenQAs.Application.Interfaces.Services;
 using MarkdownGenQAs.Helper;
 using MarkdownGenQAs.Options;
+using Microsoft.Extensions.Options;
 using Polly;
 using Polly.Retry;
 using Serilog;
@@ -15,11 +16,13 @@ namespace MarkdownGenQAs.Infrastructure.Services;
 public class S3Service : IS3Service
 {
     private readonly IAmazonS3 _s3Client;
+    private readonly MinioOptions _minioOptions;
     private readonly AsyncRetryPolicy _retryPolicy;
 
-    public S3Service(IAmazonS3 s3Client)
+    public S3Service(IAmazonS3 s3Client, IOptions<MinioOptions> minioOptions)
     {
         _s3Client = s3Client;
+        _minioOptions = minioOptions.Value;
 
         _retryPolicy = Policy
             .Handle<AmazonS3Exception>(ex => ex.StatusCode == HttpStatusCode.InternalServerError || ex.StatusCode == HttpStatusCode.ServiceUnavailable)
@@ -42,16 +45,18 @@ public class S3Service : IS3Service
 
         foreach (var bucket in privateBuckets)
         {
-            await EnsureBucketExistsAsync(bucket, false);
-            await SetPrivateBucketPolicyAsync(bucket);
+            var isNew = await EnsureBucketExistsAsync(bucket, false);
+            if (isNew)
+                await SetPrivateBucketPolicyAsync(bucket);
         }
 
         // Public bucket for images
-        await EnsureBucketExistsAsync(S3BucketName.PublicImages, true);
-        await SetPublicReadBucketPolicyAsync(S3BucketName.PublicImages);
+        var isNewPublic = await EnsureBucketExistsAsync(S3BucketName.PublicImages, true);
+        if (isNewPublic)
+            await SetPublicReadBucketPolicyAsync(S3BucketName.PublicImages);
     }
 
-    private async Task EnsureBucketExistsAsync(string bucketName, bool isPublic = false)
+    private async Task<bool> EnsureBucketExistsAsync(string bucketName, bool isPublic = false)
     {
         try
         {
@@ -65,7 +70,10 @@ public class S3Service : IS3Service
                 };
                 await _s3Client.PutBucketAsync(putBucketRequest);
                 Log.Information("Bucket {BucketName} created successfully.", bucketName);
+                return true;
             }
+
+            return false;
         }
         catch (Exception ex)
         {
@@ -258,7 +266,6 @@ public class S3Service : IS3Service
 
         try
         {
-            // Parallel Deletion
             Log.Information("Starting parallel deletion of {Count} files", fileList.Count);
             var deleteTasks = fileList.Select(f => DeleteFileAsync(f.ObjectKey, f.BucketName));
             await Task.WhenAll(deleteTasks);
@@ -270,6 +277,91 @@ public class S3Service : IS3Service
         {
             Log.Error(ex, "Error occurred during parallel file deletion");
             return false;
+        }
+    }
+
+    public Task<string> GeneratePresignedUploadUrlAsync(string objectKey, string bucketName, string contentType, TimeSpan expiration)
+    {
+        objectKey = S3Helper.NormalizeObjectKey(objectKey);
+
+        var request = new GetPreSignedUrlRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            Verb = HttpVerb.PUT,
+            Expires = DateTime.UtcNow.Add(expiration),
+            ContentType = contentType,
+            Protocol = Protocol.HTTP
+        };
+
+        var url = _s3Client.GetPreSignedURL(request);
+        url = ReplaceHostWithPublicEndpoint(url);
+        return Task.FromResult(url);
+    }
+
+    public async Task<(long ContentLength, string? ContentType)> GetFileMetadataAsync(string objectKey, string bucketName)
+    {
+        objectKey = S3Helper.NormalizeObjectKey(objectKey);
+        var request = new GetObjectMetadataRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey
+        };
+
+        var response = await _s3Client.GetObjectMetadataAsync(request);
+        return (response.ContentLength, response.Headers.ContentType);
+    }
+
+    public async Task<byte[]> ReadFileHeadAsync(string objectKey, string bucketName, int byteCount)
+    {
+        objectKey = S3Helper.NormalizeObjectKey(objectKey);
+        var request = new GetObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            ByteRange = new ByteRange(0, byteCount - 1)
+        };
+
+        using var response = await _s3Client.GetObjectAsync(request);
+        using var memoryStream = new MemoryStream();
+        await response.ResponseStream.CopyToAsync(memoryStream);
+        return memoryStream.ToArray();
+    }
+
+    public Task<string> GeneratePresignedDownloadUrlAsync(string objectKey, string bucketName, TimeSpan expiration)
+    {
+        objectKey = S3Helper.NormalizeObjectKey(objectKey);
+
+        var request = new GetPreSignedUrlRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            Verb = HttpVerb.GET,
+            Expires = DateTime.UtcNow.Add(expiration),
+            Protocol = Protocol.HTTP
+        };
+
+        var url = _s3Client.GetPreSignedURL(request);
+        url = ReplaceHostWithPublicEndpoint(url);
+        return Task.FromResult(url);
+    }
+
+    private string ReplaceHostWithPublicEndpoint(string url)
+    {
+        if (string.IsNullOrEmpty(_minioOptions.PublicEndpoint))
+            return url;
+
+        try
+        {
+            var originalUri = new Uri(url);
+            var publicUri = new UriBuilder(_minioOptions.PublicEndpoint);
+            publicUri.Path = publicUri.Path.TrimEnd('/') + originalUri.AbsolutePath;
+            publicUri.Query = originalUri.Query;
+            return publicUri.ToString();
+        }
+        catch
+        {
+            return url;
         }
     }
 }

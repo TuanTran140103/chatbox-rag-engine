@@ -8,16 +8,16 @@ public class ChunkInfo
     [JsonPropertyName("type")]
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public TypeChunk Type { get; set; }
-    [JsonPropertyName("tokens_count")]
+    [JsonPropertyName("tokensCount")]
     public int TokensCount { get; set; }
     [JsonPropertyName("title")]
     public string? Title { get; set; } = string.Empty;
-    [JsonPropertyName("tittle_hirarchy")]
-    public string? TittleHirarchy { get; set; } = string.Empty;
+    [JsonPropertyName("titleHierarchy")]
+    public string? TitleHierarchy { get; set; } = string.Empty;
     [JsonPropertyName("content")]
     public required string Content { get; set; }
     // only set when type is Summary
-    [JsonPropertyName("content_summary")]
+    [JsonPropertyName("contentSummary")]
     public string? ContentSummary { get; set; }
 
     [JsonIgnore]

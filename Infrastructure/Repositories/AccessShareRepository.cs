@@ -10,7 +10,7 @@ public class AccessShareRepository : GenericRepository<AccessShare>, IAccessShar
     {
     }
 
-    public async Task<AccessShare?> GetByTargetAndDatasetAsync(Guid datasetId, Guid? datasetItemId, Guid? userId, Guid? ouId)
+    public async Task<AccessShare?> GetByTargetAndDatasetAsync(Guid datasetId, Guid? datasetItemId, Guid? userId, Guid? departmentId)
     {
         var query = _context.AccessShares.Where(s => s.DatasetId == datasetId);
 
@@ -20,8 +20,8 @@ public class AccessShareRepository : GenericRepository<AccessShare>, IAccessShar
         if (userId.HasValue)
             query = query.Where(s => s.ShareToUserId == userId);
 
-        if (ouId.HasValue)
-            query = query.Where(s => s.ShareToOUId == ouId);
+        if (departmentId.HasValue)
+            query = query.Where(s => s.ShareToDepartmentId == departmentId);
 
         return await query.FirstOrDefaultAsync();
     }
@@ -47,10 +47,10 @@ public class AccessShareRepository : GenericRepository<AccessShare>, IAccessShar
             .ToListAsync();
     }
 
-    public async Task<IEnumerable<AccessShare>> GetByOUAsync(Guid ouId)
+    public async Task<IEnumerable<AccessShare>> GetByDepartmentAsync(Guid departmentId)
     {
         return await _context.AccessShares
-            .Where(s => s.ShareToOUId == ouId)
+            .Where(s => s.ShareToDepartmentId == departmentId)
             .ToListAsync();
     }
 }

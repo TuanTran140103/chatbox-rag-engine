@@ -53,7 +53,7 @@ public class DocumentRepository : GenericRepository<Document>, IDocumentReposito
     {
         return await _dbSet
             .AsNoTracking()
-            .Where(d => d.Status == StatusDocument.Successed && d.IsOcred && !d.IsIndexed)
+            .Where(d => d.Status == StatusDocument.Succeeded && d.IsOcred && !d.IsIndexed)
             .ToListAsync();
     }
 

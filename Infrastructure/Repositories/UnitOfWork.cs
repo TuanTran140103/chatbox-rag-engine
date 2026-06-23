@@ -14,8 +14,6 @@ public class UnitOfWork : IUnitOfWork
     public IDatasetRepository Datasets { get; }
     public IDatasetItemRepository DatasetItems { get; }
     public IAccessShareRepository AccessShares { get; }
-    public IOrganizationUnitRepository OrganizationUnits { get; }
-    public IUserPositionRepository UserPositions { get; }
 
     public UnitOfWork(
         ApplicationContext context,
@@ -24,9 +22,7 @@ public class UnitOfWork : IUnitOfWork
         ILogMessageRepository logMessages,
         IDatasetRepository datasets,
         IDatasetItemRepository datasetItems,
-        IAccessShareRepository accessShares,
-        IOrganizationUnitRepository organizationUnits,
-        IUserPositionRepository userPositions)
+        IAccessShareRepository accessShares)
     {
         _context = context;
         Documents = documents;
@@ -35,8 +31,6 @@ public class UnitOfWork : IUnitOfWork
         Datasets = datasets;
         DatasetItems = datasetItems;
         AccessShares = accessShares;
-        OrganizationUnits = organizationUnits;
-        UserPositions = userPositions;
     }
 
     public async Task<int> SaveChangesAsync()

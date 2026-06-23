@@ -62,7 +62,7 @@ namespace MarkdownGenQAs.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<Guid?>("ShareToOUId")
+                    b.Property<Guid?>("ShareToDepartmentId")
                         .HasColumnType("uuid");
 
                     b.Property<Guid?>("ShareToUserId")
@@ -75,119 +75,11 @@ namespace MarkdownGenQAs.Migrations
 
                     b.HasIndex("DatasetItemId");
 
-                    b.HasIndex("GrantedBy");
-
-                    b.HasIndex("ShareToOUId");
-
-                    b.HasIndex("ShareToUserId");
-
-                    b.HasIndex("DatasetId", "DatasetItemId", "ShareToUserId", "ShareToOUId")
+                    b.HasIndex("DatasetId", "DatasetItemId", "ShareToUserId", "ShareToDepartmentId")
                         .IsUnique()
                         .HasFilter("\"DatasetItemId\" IS NOT NULL");
 
                     b.ToTable("AccessShares", (string)null);
-                });
-
-            modelBuilder.Entity("MarkdownGenQAs.Models.Entities.ApplicationRole", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("ConcurrencyStamp")
-                        .IsConcurrencyToken()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Name")
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<string>("NormalizedName")
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("NormalizedName")
-                        .IsUnique()
-                        .HasDatabaseName("RoleNameIndex");
-
-                    b.ToTable("Roles", (string)null);
-                });
-
-            modelBuilder.Entity("MarkdownGenQAs.Models.Entities.ApplicationUser", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("AccessFailedCount")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("ConcurrencyStamp")
-                        .IsConcurrencyToken()
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("timestamp with time zone")
-                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
-
-                    b.Property<string>("Email")
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<bool>("EmailConfirmed")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("LockoutEnabled")
-                        .HasColumnType("boolean");
-
-                    b.Property<DateTimeOffset?>("LockoutEnd")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("NormalizedEmail")
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<string>("NormalizedUserName")
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<string>("PasswordHash")
-                        .HasColumnType("text");
-
-                    b.Property<string>("PhoneNumber")
-                        .HasColumnType("text");
-
-                    b.Property<bool>("PhoneNumberConfirmed")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("SecurityStamp")
-                        .HasColumnType("text");
-
-                    b.Property<bool>("TwoFactorEnabled")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("UserName")
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CreatedAt");
-
-                    b.HasIndex("NormalizedEmail")
-                        .HasDatabaseName("IX_Users_NormalizedEmail_Trgm");
-
-                    NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("NormalizedEmail"), "gin");
-                    NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("NormalizedEmail"), new[] { "gin_trgm_ops" });
-
-                    b.HasIndex("NormalizedUserName")
-                        .IsUnique()
-                        .HasDatabaseName("UserNameIndex");
-
-                    b.ToTable("Users", (string)null);
                 });
 
             modelBuilder.Entity("MarkdownGenQAs.Models.Entities.ConversationThread", b =>
@@ -238,8 +130,6 @@ namespace MarkdownGenQAs.Migrations
                     NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Title"), "gin");
                     NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Title"), new[] { "gin_trgm_ops" });
 
-                    b.HasIndex("UserId");
-
                     b.ToTable("Threads", (string)null);
                 });
 
@@ -264,6 +154,9 @@ namespace MarkdownGenQAs.Migrations
                     b.Property<Guid?>("DeletedBy")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("DepartmentId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Description")
                         .HasMaxLength(1000)
                         .HasColumnType("character varying(1000)");
@@ -273,9 +166,6 @@ namespace MarkdownGenQAs.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(false);
 
-                    b.Property<bool>("IsPublicToUnit")
-                        .HasColumnType("boolean");
-
                     b.Property<Guid?>("ModifiedBy")
                         .HasColumnType("uuid");
 
@@ -283,9 +173,6 @@ namespace MarkdownGenQAs.Migrations
                         .IsRequired()
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
-
-                    b.Property<Guid?>("OUId")
-                        .HasColumnType("uuid");
 
                     b.Property<Guid>("OwnerUserId")
                         .HasColumnType("uuid");
@@ -302,10 +189,6 @@ namespace MarkdownGenQAs.Migrations
 
                     NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("Name"), "gin");
                     NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("Name"), new[] { "gin_trgm_ops" });
-
-                    b.HasIndex("OUId");
-
-                    b.HasIndex("OwnerUserId");
 
                     b.HasIndex("TemplateMetadataId");
 
@@ -392,6 +275,9 @@ namespace MarkdownGenQAs.Migrations
                     b.Property<string>("ChunkContent")
                         .HasColumnType("text");
 
+                    b.Property<string>("ContentType")
+                        .HasColumnType("text");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -411,6 +297,9 @@ namespace MarkdownGenQAs.Migrations
                         .IsRequired()
                         .HasMaxLength(500)
                         .HasColumnType("character varying(500)");
+
+                    b.Property<long?>("FileSize")
+                        .HasColumnType("bigint");
 
                     b.Property<DateTime?>("GenQaCompletedAt")
                         .HasColumnType("timestamp with time zone");
@@ -507,8 +396,6 @@ namespace MarkdownGenQAs.Migrations
                     NpgsqlIndexBuilderExtensions.HasMethod(b.HasIndex("FileName"), "gin");
                     NpgsqlIndexBuilderExtensions.HasOperators(b.HasIndex("FileName"), new[] { "gin_trgm_ops" });
 
-                    b.HasIndex("UserId");
-
                     b.ToTable("Documents", (string)null);
                 });
 
@@ -602,62 +489,6 @@ namespace MarkdownGenQAs.Migrations
                     b.ToTable("LogMessages", (string)null);
                 });
 
-            modelBuilder.Entity("MarkdownGenQAs.Models.Entities.OrganizationUnit", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Code")
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid?>("CreatedBy")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime?>("DeletedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("uuid");
-
-                    b.Property<bool>("IsDeleted")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false);
-
-                    b.Property<int>("Level")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid?>("ModifiedBy")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(255)
-                        .HasColumnType("character varying(255)");
-
-                    b.Property<Guid?>("ParentId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Path")
-                        .IsRequired()
-                        .HasMaxLength(1000)
-                        .HasColumnType("character varying(1000)");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ParentId");
-
-                    b.ToTable("OrganizationUnits", (string)null);
-                });
-
             modelBuilder.Entity("MarkdownGenQAs.Models.Entities.SystemStatistics", b =>
                 {
                     b.Property<Guid>("Id")
@@ -673,13 +504,13 @@ namespace MarkdownGenQAs.Migrations
                     b.Property<Guid?>("DeletedBy")
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("DepartmentId")
+                        .HasColumnType("uuid");
+
                     b.Property<bool>("IsDeleted")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
                         .HasDefaultValue(false);
-
-                    b.Property<Guid?>("OUId")
-                        .HasColumnType("uuid");
 
                     b.Property<int>("TotalDatasets")
                         .ValueGeneratedOnAdd()
@@ -701,7 +532,7 @@ namespace MarkdownGenQAs.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("OUId");
+                    b.HasIndex("DepartmentId");
 
                     b.ToTable("SystemStatistics", (string)null);
                 });
@@ -756,160 +587,6 @@ namespace MarkdownGenQAs.Migrations
                     b.ToTable("TemplateMetadatas", (string)null);
                 });
 
-            modelBuilder.Entity("MarkdownGenQAs.Models.Entities.UserPosition", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime?>("DeletedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid?>("DeletedBy")
-                        .HasColumnType("uuid");
-
-                    b.Property<bool>("IsDeleted")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false);
-
-                    b.Property<bool>("IsPrimary")
-                        .HasColumnType("boolean");
-
-                    b.Property<Guid?>("ManagerId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("OUId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Role")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTime>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ManagerId");
-
-                    b.HasIndex("OUId");
-
-                    b.HasIndex("UserId", "OUId")
-                        .IsUnique();
-
-                    b.ToTable("UserPositions", (string)null);
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<System.Guid>", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("ClaimType")
-                        .HasColumnType("text");
-
-                    b.Property<string>("ClaimValue")
-                        .HasColumnType("text");
-
-                    b.Property<Guid>("RoleId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("RoleId");
-
-                    b.ToTable("RoleClaims", (string)null);
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<System.Guid>", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("integer");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("ClaimType")
-                        .HasColumnType("text");
-
-                    b.Property<string>("ClaimValue")
-                        .HasColumnType("text");
-
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("UserId");
-
-                    b.ToTable("UserClaims", (string)null);
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<System.Guid>", b =>
-                {
-                    b.Property<string>("ProviderKey")
-                        .HasColumnType("text");
-
-                    b.Property<string>("LoginProvider")
-                        .HasColumnType("text");
-
-                    b.Property<string>("ProviderDisplayName")
-                        .HasColumnType("text");
-
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("ProviderKey", "LoginProvider");
-
-                    b.HasIndex("UserId");
-
-                    b.ToTable("UserLogins", (string)null);
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<System.Guid>", b =>
-                {
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("RoleId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("UserId", "RoleId");
-
-                    b.HasIndex("RoleId");
-
-                    b.ToTable("UserRoles", (string)null);
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<System.Guid>", b =>
-                {
-                    b.Property<Guid>("UserId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("LoginProvider")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Name")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Value")
-                        .HasColumnType("text");
-
-                    b.HasKey("UserId", "LoginProvider", "Name");
-
-                    b.ToTable("UserTokens", (string)null);
-                });
-
             modelBuilder.Entity("MarkdownGenQAs.Models.Entities.AccessShare", b =>
                 {
                     b.HasOne("MarkdownGenQAs.Models.Entities.Dataset", "Dataset")
@@ -923,65 +600,17 @@ namespace MarkdownGenQAs.Migrations
                         .HasForeignKey("DatasetItemId")
                         .OnDelete(DeleteBehavior.Cascade);
 
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationUser", "Grantor")
-                        .WithMany()
-                        .HasForeignKey("GrantedBy")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("MarkdownGenQAs.Models.Entities.OrganizationUnit", "ShareToOU")
-                        .WithMany()
-                        .HasForeignKey("ShareToOUId")
-                        .OnDelete(DeleteBehavior.Cascade);
-
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationUser", "ShareToUser")
-                        .WithMany()
-                        .HasForeignKey("ShareToUserId")
-                        .OnDelete(DeleteBehavior.Cascade);
-
                     b.Navigation("Dataset");
 
                     b.Navigation("DatasetItem");
-
-                    b.Navigation("Grantor");
-
-                    b.Navigation("ShareToOU");
-
-                    b.Navigation("ShareToUser");
-                });
-
-            modelBuilder.Entity("MarkdownGenQAs.Models.Entities.ConversationThread", b =>
-                {
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationUser", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("MarkdownGenQAs.Models.Entities.Dataset", b =>
                 {
-                    b.HasOne("MarkdownGenQAs.Models.Entities.OrganizationUnit", "OrganizationUnit")
-                        .WithMany("Datasets")
-                        .HasForeignKey("OUId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationUser", "Owner")
-                        .WithMany()
-                        .HasForeignKey("OwnerUserId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.HasOne("MarkdownGenQAs.Models.Entities.TemplateMetadata", "TemplateMetadata")
                         .WithMany("Datasets")
                         .HasForeignKey("TemplateMetadataId")
                         .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("OrganizationUnit");
-
-                    b.Navigation("Owner");
 
                     b.Navigation("TemplateMetadata");
                 });
@@ -1011,16 +640,6 @@ namespace MarkdownGenQAs.Migrations
                     b.Navigation("Parent");
                 });
 
-            modelBuilder.Entity("MarkdownGenQAs.Models.Entities.Document", b =>
-                {
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationUser", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.Navigation("User");
-                });
-
             modelBuilder.Entity("MarkdownGenQAs.Models.Entities.DocumentJob", b =>
                 {
                     b.HasOne("MarkdownGenQAs.Models.Entities.Document", "Document")
@@ -1042,103 +661,6 @@ namespace MarkdownGenQAs.Migrations
                     b.Navigation("Document");
                 });
 
-            modelBuilder.Entity("MarkdownGenQAs.Models.Entities.OrganizationUnit", b =>
-                {
-                    b.HasOne("MarkdownGenQAs.Models.Entities.OrganizationUnit", "Parent")
-                        .WithMany("Children")
-                        .HasForeignKey("ParentId")
-                        .OnDelete(DeleteBehavior.Restrict);
-
-                    b.Navigation("Parent");
-                });
-
-            modelBuilder.Entity("MarkdownGenQAs.Models.Entities.SystemStatistics", b =>
-                {
-                    b.HasOne("MarkdownGenQAs.Models.Entities.OrganizationUnit", "OU")
-                        .WithMany()
-                        .HasForeignKey("OUId")
-                        .OnDelete(DeleteBehavior.Cascade);
-
-                    b.Navigation("OU");
-                });
-
-            modelBuilder.Entity("MarkdownGenQAs.Models.Entities.UserPosition", b =>
-                {
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationUser", "Manager")
-                        .WithMany()
-                        .HasForeignKey("ManagerId")
-                        .OnDelete(DeleteBehavior.SetNull);
-
-                    b.HasOne("MarkdownGenQAs.Models.Entities.OrganizationUnit", "OrganizationUnit")
-                        .WithMany("UserPositions")
-                        .HasForeignKey("OUId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationUser", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Manager");
-
-                    b.Navigation("OrganizationUnit");
-
-                    b.Navigation("User");
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<System.Guid>", b =>
-                {
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationRole", null)
-                        .WithMany()
-                        .HasForeignKey("RoleId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserClaim<System.Guid>", b =>
-                {
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationUser", null)
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserLogin<System.Guid>", b =>
-                {
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationUser", null)
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserRole<System.Guid>", b =>
-                {
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationRole", null)
-                        .WithMany()
-                        .HasForeignKey("RoleId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationUser", null)
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityUserToken<System.Guid>", b =>
-                {
-                    b.HasOne("MarkdownGenQAs.Models.Entities.ApplicationUser", null)
-                        .WithMany()
-                        .HasForeignKey("UserId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-                });
-
             modelBuilder.Entity("MarkdownGenQAs.Models.Entities.Dataset", b =>
                 {
                     b.Navigation("AccessShares");
@@ -1153,15 +675,6 @@ namespace MarkdownGenQAs.Migrations
                     b.Navigation("DocumentJob");
 
                     b.Navigation("LogMessage");
-                });
-
-            modelBuilder.Entity("MarkdownGenQAs.Models.Entities.OrganizationUnit", b =>
-                {
-                    b.Navigation("Children");
-
-                    b.Navigation("Datasets");
-
-                    b.Navigation("UserPositions");
                 });
 
             modelBuilder.Entity("MarkdownGenQAs.Models.Entities.TemplateMetadata", b =>

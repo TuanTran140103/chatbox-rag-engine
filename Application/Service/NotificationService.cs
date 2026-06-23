@@ -17,15 +17,9 @@ public class NotificationService
         _uow = uow;
     }
 
-    public IAsyncEnumerable<NotificationMessage> SubscribeAsync(string processType, Guid documentId, CancellationToken ct)
-    {
-        return _broadcaster.SubscribeAsync(processType, documentId, ct);
-    }
-
-    public async IAsyncEnumerable<NotificationMessage> SubscribeWithResumeAsync(
+    public async IAsyncEnumerable<NotificationMessage> SubscribeAsync(
         string processType,
         Guid documentId,
-        string? afterId,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var document = await _uow.Documents.GetByIdAsync(documentId);
@@ -49,13 +43,19 @@ public class NotificationService
                 if (document.Status != StatusDocument.ProcessingOcr
                     || (documentJob?.StatusOcr != StatusJob.Processing && documentJob?.StatusOcr != StatusJob.Pending))
                 {
-                    yield return new NotificationMessage
+                    var history = await _broadcaster.ReadHistoryAsync(processType, documentId);
+                    foreach (var msg in history)
+                        yield return msg;
+                    if (history.Count == 0)
                     {
-                        DocumentId = documentId,
-                        Status = document.Status.ToString(),
-                        Message = $"OCR is not currently processing. Document status: {document.Status}",
-                        ProcessType = processType
-                    };
+                        yield return new NotificationMessage
+                        {
+                            DocumentId = documentId,
+                            Status = document.Status.ToString(),
+                            Message = $"OCR is not currently processing. Document status: {document.Status}",
+                            ProcessType = processType
+                        };
+                    }
                     yield break;
                 }
                 break;
@@ -64,19 +64,25 @@ public class NotificationService
                 if (document.Status != StatusDocument.ProcessingIndexing
                     || (documentJob?.StatusIndexing != StatusJob.Processing && documentJob?.StatusIndexing != StatusJob.Pending))
                 {
-                    yield return new NotificationMessage
+                    var history = await _broadcaster.ReadHistoryAsync(processType, documentId);
+                    foreach (var msg in history)
+                        yield return msg;
+                    if (history.Count == 0)
                     {
-                        DocumentId = documentId,
-                        Status = document.Status.ToString(),
-                        Message = $"Indexing is not currently processing. Document status: {document.Status}",
-                        ProcessType = processType
-                    };
+                        yield return new NotificationMessage
+                        {
+                            DocumentId = documentId,
+                            Status = document.Status.ToString(),
+                            Message = $"Indexing is not currently processing. Document status: {document.Status}",
+                            ProcessType = processType
+                        };
+                    }
                     yield break;
                 }
                 break;
         }
 
-        await foreach (var message in _broadcaster.SubscribeWithResumeAsync(processType, documentId, afterId, ct))
+        await foreach (var message in _broadcaster.SubscribeAsync(processType, documentId, ct))
         {
             yield return message;
         }

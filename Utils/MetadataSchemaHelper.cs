@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
@@ -58,6 +59,138 @@ public static class MetadataSchemaHelper
         catch (JsonException ex)
         {
             return (false, $"Invalid JSON: {ex.Message}");
+        }
+    }
+
+    public static (string json, bool changed) NormalizeEnumValues(string json, string jsonSchema)
+    {
+        try
+        {
+            using var schemaDoc = JsonDocument.Parse(jsonSchema);
+            var mappings = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
+            BuildEnumMappings(schemaDoc.RootElement, string.Empty, mappings);
+
+            if (mappings.Count == 0) return (json, false);
+
+            JsonNode? node;
+            try { node = JsonNode.Parse(json); }
+            catch (JsonException) { return (json, false); }
+
+            if (node is not JsonObject root) return (json, false);
+
+            var changed = false;
+            ApplyEnumNormalization(root, string.Empty, mappings, ref changed);
+
+            return changed ? (node.ToJsonString(IndentedJsonOptions), true) : (json, false);
+        }
+        catch
+        {
+            return (json, false);
+        }
+    }
+
+    private static void BuildEnumMappings(JsonElement schemaEl, string prefix, Dictionary<string, Dictionary<string, string>> mappings)
+    {
+        if (schemaEl.ValueKind != JsonValueKind.Object) return;
+
+        if (schemaEl.TryGetProperty("properties", out var props) && props.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in props.EnumerateObject())
+            {
+                var key = string.IsNullOrEmpty(prefix) ? prop.Name : $"{prefix}.{prop.Name}";
+                var enumValues = ExtractEnumValues(prop.Value);
+                if (enumValues != null)
+                    mappings[key] = BuildLookup(enumValues);
+
+                BuildEnumMappings(prop.Value, key, mappings);
+            }
+        }
+    }
+
+    private static List<string>? ExtractEnumValues(JsonElement propValue)
+    {
+        if (propValue.TryGetProperty("enum", out var enumEl) && enumEl.ValueKind == JsonValueKind.Array)
+        {
+            var list = new List<string>();
+            foreach (var v in enumEl.EnumerateArray())
+            {
+                if (v.ValueKind == JsonValueKind.String)
+                    list.Add(v.GetString()!);
+            }
+            return list.Count > 0 ? list : null;
+        }
+
+        if (propValue.TryGetProperty("oneOf", out var oneOfEl) && oneOfEl.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var branch in oneOfEl.EnumerateArray())
+            {
+                var sub = ExtractEnumValues(branch);
+                if (sub != null) return sub;
+            }
+        }
+
+        return null;
+    }
+
+    private static Dictionary<string, string> BuildLookup(List<string> canonicalValues)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var v in canonicalValues)
+        {
+            var key = FoldForLookup(v);
+            if (key.Length > 0 && !map.ContainsKey(key))
+                map[key] = v;
+        }
+        return map;
+    }
+
+    private static string FoldForLookup(string s)
+    {
+        var formD = s.Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(formD.Length);
+        foreach (var c in formD)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
+                sb.Append(c);
+        }
+        return sb.ToString().Normalize(NormalizationForm.FormC).ToLowerInvariant();
+    }
+
+    private static void ApplyEnumNormalization(JsonNode node, string prefix, Dictionary<string, Dictionary<string, string>> mappings, ref bool changed)
+    {
+        if (node is JsonObject obj)
+        {
+            var keys = new List<string>();
+            foreach (var kvp in obj) keys.Add(kvp.Key);
+
+            foreach (var key in keys)
+            {
+                var jsonKey = string.IsNullOrEmpty(prefix) ? key : $"{prefix}.{key}";
+                var value = obj[key];
+
+                if (value is JsonValue jv && jv.TryGetValue<string>(out var str) && mappings.TryGetValue(jsonKey, out var map))
+                {
+                    if (str is null) continue;
+                    var lookup = FoldForLookup(str);
+                    if (map.TryGetValue(lookup, out var canonical) && !string.Equals(canonical, str, StringComparison.Ordinal))
+                    {
+                        obj[key] = JsonValue.Create(canonical);
+                        changed = true;
+                    }
+                }
+                else if (value is JsonObject or JsonArray)
+                {
+                    ApplyEnumNormalization(value, jsonKey, mappings, ref changed);
+                }
+            }
+        }
+        else if (node is JsonArray arr)
+        {
+            for (int i = 0; i < arr.Count; i++)
+            {
+                if (arr[i] is JsonObject or JsonArray)
+                    ApplyEnumNormalization(arr[i]!, prefix, mappings, ref changed);
+            }
         }
     }
 
@@ -311,6 +444,7 @@ public static class MetadataSchemaHelper
             "integer" => PayloadSchemaType.Integer,
             "number" => PayloadSchemaType.Float,
             "boolean" => PayloadSchemaType.Bool,
+            "datetime" => PayloadSchemaType.Datetime,
             _ => PayloadSchemaType.Keyword
         };
     }
@@ -341,19 +475,6 @@ public static class MetadataSchemaHelper
 
     private static string? ResolveSchemaType(JsonElement propValue)
     {
-        if (propValue.TryGetProperty("type", out var typeEl))
-        {
-            if (typeEl.ValueKind == JsonValueKind.String)
-                return typeEl.GetString();
-            if (typeEl.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var t in typeEl.EnumerateArray())
-                {
-                    var val = t.GetString();
-                    if (val != "null") return val;
-                }
-            }
-        }
         if (propValue.TryGetProperty("oneOf", out var oneOfEl))
         {
             foreach (var branch in oneOfEl.EnumerateArray())
@@ -366,8 +487,31 @@ public static class MetadataSchemaHelper
             return "object";
         if (propValue.TryGetProperty("items", out _))
             return "array";
-        if (propValue.TryGetProperty("format", out _))
-            return "string";
+
+        var hasDateFormat = propValue.TryGetProperty("format", out var formatEl)
+            && formatEl.ValueKind == JsonValueKind.String
+            && (formatEl.GetString() == "date" || formatEl.GetString() == "date-time");
+
+        if (propValue.TryGetProperty("type", out var typeEl))
+        {
+            if (typeEl.ValueKind == JsonValueKind.String)
+            {
+                var t = typeEl.GetString();
+                if (hasDateFormat) return "datetime";
+                return t;
+            }
+            if (typeEl.ValueKind == JsonValueKind.Array)
+            {
+                if (hasDateFormat) return "datetime";
+                foreach (var t in typeEl.EnumerateArray())
+                {
+                    var val = t.GetString();
+                    if (val != "null") return val;
+                }
+            }
+        }
+
+        if (hasDateFormat) return "datetime";
         return null;
     }
 

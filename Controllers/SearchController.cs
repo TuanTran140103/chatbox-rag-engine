@@ -8,7 +8,7 @@ namespace MarkdownGenQAs.Controllers;
 
 [ApiController]
 [Route("api/v1/search")]
-[Authorize]
+[Authorize(Roles = "User")]
 public class SearchController : ControllerBase
 {
     private readonly ISearchService _searchService;

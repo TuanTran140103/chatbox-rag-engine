@@ -9,7 +9,7 @@ namespace MarkdownGenQAs.Controllers;
 
 [ApiController]
 [Route("api/v1/threads")]
-[Authorize]
+[Authorize(Roles = "User")]
 public class ThreadController : ControllerBase
 {
     private readonly ApplicationContext _context;
@@ -24,7 +24,8 @@ public class ThreadController : ControllerBase
         [FromQuery] Guid? id,
         [FromQuery] string? title)
     {
-        var query = _context.Threads.Where(t => !t.IsDeleted);
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var query = _context.Threads.Where(t => !t.IsDeleted && t.UserId == userId);
 
         if (id.HasValue)
             query = query.Where(t => t.Id == id.Value);
@@ -52,8 +53,9 @@ public class ThreadController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<ThreadDetailDto>> GetById(Guid id)
     {
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
         var thread = await _context.Threads
-            .Where(t => !t.IsDeleted && t.Id == id)
+            .Where(t => !t.IsDeleted && t.Id == id && t.UserId == userId)
             .Select(t => new ThreadDetailDto
             {
                 Id = t.Id,
@@ -100,7 +102,8 @@ public class ThreadController : ControllerBase
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateThreadRequestDto dto)
     {
-        var thread = await _context.Threads.FirstOrDefaultAsync(t => !t.IsDeleted && t.Id == id);
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var thread = await _context.Threads.FirstOrDefaultAsync(t => !t.IsDeleted && t.Id == id && t.UserId == userId);
 
         if (thread == null)
             return NotFound(new { error = "Thread not found" });
@@ -122,7 +125,8 @@ public class ThreadController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id)
     {
-        var thread = await _context.Threads.FirstOrDefaultAsync(t => !t.IsDeleted && t.Id == id);
+        var userId = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
+        var thread = await _context.Threads.FirstOrDefaultAsync(t => !t.IsDeleted && t.Id == id && t.UserId == userId);
 
         if (thread == null)
             return NotFound(new { error = "Thread not found" });

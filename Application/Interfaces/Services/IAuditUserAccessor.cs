@@ -4,4 +4,5 @@ public interface IAuditUserAccessor
 {
     Guid? GetCurrentUserId();
     bool IsAdmin();
+    List<Guid> GetUserDepartmentIds();
 }

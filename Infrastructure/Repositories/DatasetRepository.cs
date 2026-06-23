@@ -37,13 +37,13 @@ public class DatasetRepository : GenericRepository<Dataset>, IDatasetRepository
             .ToListAsync();
     }
 
-    public async Task<Dictionary<Guid, int>> GetCountsByOUAsync()
+    public async Task<Dictionary<Guid, int>> GetCountsByDepartmentAsync()
     {
         return await _dbSet
             .AsNoTracking()
-            .Where(d => d.OUId.HasValue)
-            .GroupBy(d => d.OUId!.Value)
-            .Select(g => new { OUId = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.OUId, x => x.Count);
+            .Where(d => d.DepartmentId.HasValue)
+            .GroupBy(d => d.DepartmentId!.Value)
+            .Select(g => new { DepartmentId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.DepartmentId, x => x.Count);
     }
 }
